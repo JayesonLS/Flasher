@@ -1,5 +1,5 @@
-// Flasher
-// Programs SST89SF0x0A Flash ROMs
+// Flasher - Programs SST89SF0x0A Flash ROMs
+//
 // Copyright (C) 2021 Titanium Studios Pty Ltd 
 // 
 // This program is free software : you can redistribute it and/or modify
@@ -15,10 +15,19 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.If not, see < https://www.gnu.org/licenses/>.
 
+// This code requires far data pointers. Near code pointers are fine.
+// Tested with Borland Turbo C++ using the Compact memory model.
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+
+#if defined(MSDOS) || defined(_MSDOS) || defined(__MSDOS__) || defined(__TURBOC__)
+#include <dos.h>
+#else
+#include "fakedos.h"
+#endif
 
 #define TRUE 1
 #define FALSE 0
@@ -29,6 +38,8 @@
 #define ROM_BLOCK_SIZE (ROM_BLOCK_SIZE_K * 1024)
 #define FLASH_BLOCK_SIZE (FLASH_BLOCK_SIZE_K * 1024)
 #define MAX_ROM_BLOCK_COUNT (MAX_ROM_SIZE_K / FLASH_BLOCK_SIZE_K)
+
+#define MAX_TIMEOUT_VALUE 0xFFFFFFFF
 
 static const char *PRODUCT_STRING =
 	"Flasher Version 0.1 - Programs SST89SF0x0A Flash ROMs\n"
@@ -53,6 +64,15 @@ typedef struct _RomData
 	unsigned int numRomBlocks;
 	unsigned long origRomSize;
 } RomData;
+
+void LogMessageNoCr(const char *msg, ...)
+{
+	va_list args;
+
+	va_start(args, msg);
+	vprintf(msg, args);
+	va_end(args);
+}
 
 void LogMessage(const char *msg, ...)
 {
@@ -91,6 +111,23 @@ void LogError(const char *msg, ...)
 	printf("\n");
 }
 
+bool CheckMemoryModel()
+{
+	// We need a memory model with far pointers.
+	// So a non-specific pointer should work the same
+	// as an explicitly far pointer.
+	void *ptr = MK_FP(0, 0);
+	void far *farPtr = MK_FP(0, 0);
+
+	if ((void far *)ptr != farPtr)
+	{
+		LogError("This app must be compiled with a memory model that uses far pointers.");
+		return FALSE;
+	}
+
+	return TRUE;
+}
+
 bool ParseCmdLine(int argc, char **argv, Options* optionsOut)
 {
 	int i;
@@ -106,6 +143,7 @@ bool ParseCmdLine(int argc, char **argv, Options* optionsOut)
 			!optionsOut->destAddr && 
 			!optionsOut->romImgPath)
 		{
+			(void)nextArg; // Variable is for if we add complex options.
 			// Parse option.
 			//if (....)
 			//{
@@ -231,9 +269,58 @@ void FreeRomData(RomData *romData)
 	memset(romData, 0, sizeof(RomData));
 }
 
+// Waits for the value to be found at *addr. Loop timeout count is provided.
+// Returns actual number of loops waited.
+unsigned long WaitForValue(unsigned char *addr, unsigned char value, unsigned long timeoutCount)
+{
+	unsigned long count;
+	volatile unsigned char *addrVol;
+
+	addrVol = addr;
+
+	for (count = 0; count < timeoutCount; count++)
+	{
+		if (*addrVol == value)
+		{
+			return count;
+		}
+	}
+
+	return MAX_TIMEOUT_VALUE; // Timed out.
+}
+
+// Returns the number of polling loops needed for ~1ms delay.
+unsigned long CalculateMsTimeoutLoopCount()
+{
+	unsigned char *biosTimerLsb;
+	unsigned char startValue;
+	unsigned long tickLoopCount;
+
+	biosTimerLsb = (unsigned char *)MK_FP(0x0040, 0x006C);
+	startValue = *biosTimerLsb;
+
+	// Wait for the timer to tick over once.
+	WaitForValue(biosTimerLsb, startValue + 1, MAX_TIMEOUT_VALUE);
+
+	// Now that it just ticked over, wait for the it to 
+	// tick over one more time.
+	tickLoopCount = 
+		WaitForValue(biosTimerLsb, startValue + 2, MAX_TIMEOUT_VALUE);
+
+	// Tick is approximately 55ms, so scale accordingly.
+	return tickLoopCount / 55;
+}
+
 bool FlashRom(unsigned int destAddr, const RomData* romData)
 {
-	// TODO: Calibrate timeout timer.
+	unsigned long msTimeoutLoopCount;
+
+	//Calibrate timeout timer.
+	LogMessageNoCr("Calibrating timeout timer...");
+	msTimeoutLoopCount =
+		CalculateMsTimeoutLoopCount();
+	LogMessage(" %ld loops per ms", msTimeoutLoopCount);
+
 	// TODO: Compute sequence base address.
 	// TODO: Warn if sequence will run outside of specified ROM range.
 	// TODO: Detect device, and if OK, display message.
@@ -253,6 +340,11 @@ int main(int argc, char **argv)
 	bool flashResult;
 
 	printf(PRODUCT_STRING);
+
+	if (!CheckMemoryModel())
+	{
+		return 1;
+	}
 
 	if (!ParseCmdLine(argc, argv, &options))
 	{
