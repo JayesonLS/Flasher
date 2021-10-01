@@ -1,4 +1,4 @@
-// Flasher - Programs SST89SF0x0A Flash ROMs
+// Flasher - Programs SST39SF0x0 Flash ROMs
 //
 // Copyright (C) 2021 Titanium Studios Pty Ltd 
 // 
@@ -44,7 +44,7 @@
 #define MAX_TIMEOUT_VALUE 0xFFFFFFFF
 
 static const char *PRODUCT_STRING =
-	"Flasher Version 0.1 - Programs SST89SF0x0A Flash ROMs\n"
+	"Flasher Version 0.1 - Programs SST39SF0x0 Flash ROMs\n"
 	"Copyright (C) 2021 Titanium Studios Pty Ltd\n"
 	"\n";
 
@@ -65,6 +65,7 @@ typedef struct _RomData
 {
 	unsigned char *romBlocks[MAX_ROM_BLOCK_COUNT];
 	unsigned int numRomBlocks;
+	unsigned long romSize;
 	unsigned long origRomSize;
 } RomData;
 
@@ -184,11 +185,6 @@ bool ParseCmdLine(int argc, char **argv, Options* optionsOut)
 	return optionsOut->destSeg && optionsOut->romImgPath;
 }
 
-long RomDataFlashLen(const RomData *romData)
-{
-	return (long)romData->numRomBlocks * FLASH_BLOCK_SIZE;
-}
-
 bool LoadRomDataFromFile(const char *path, RomData *romDataOut)
 {
 	FILE *f;
@@ -219,6 +215,7 @@ bool LoadRomDataFromFile(const char *path, RomData *romDataOut)
 		memset(buffer, 0, FLASH_BLOCK_SIZE);
 		romDataOut->romBlocks[romDataOut->numRomBlocks] = buffer;
 		romDataOut->origRomSize += (int)fread(buffer, 1, FLASH_BLOCK_SIZE, f);
+		romDataOut->romSize += FLASH_BLOCK_SIZE;
 		romDataOut->numRomBlocks++;
 	}
 
@@ -391,8 +388,58 @@ void PrintSegAddress(unsigned int seqSeg, unsigned int destSeg)
 	}
 }
 
-const char *DetectDeviceType(unsigned int seqSeg)
+void EnableInterrupts()
 {
+#ifndef __FAKEDOS__
+	asm sti;
+#endif
+}
+
+void DisableInterrupts()
+{
+#ifndef __FAKEDOS__
+	asm cli;
+#endif
+}
+
+const char *DetectDeviceType(unsigned int seqSeg, unsigned int destSeg)
+{
+	volatile unsigned char *seqPtr = MK_FP(seqSeg, 0);
+	volatile unsigned char *destPtr = MK_FP(destSeg, 0);
+	unsigned char vendorId;
+	unsigned char deviceId;
+
+	DisableInterrupts();
+
+	// Enter software ID.
+	seqPtr[0x5555] = 0xAA;
+	seqPtr[0x2AAA] = 0x55;
+	seqPtr[0x5555] = 0x90;
+
+	vendorId = destPtr[0];
+	deviceId = destPtr[1];
+
+	// Exit software ID.
+	seqPtr[0x5555] = 0xF0;
+
+	EnableInterrupts();
+
+	if (vendorId == 0xBF)
+	{
+		switch (deviceId)
+		{
+		case 0xB4:
+			return "SST39SF512";
+		case 0xB5:
+			return "SST39SF010";
+		case 0xB6:
+			return "SST39SF020";
+		case 0xB7:
+			return "SST39SF040";
+		default:
+			break;
+		}
+	}
 
 	return NULL;
 }
@@ -410,34 +457,33 @@ bool FlashRom(const Options* options, const RomData* romData)
 	PrintMessage(" %ld loops per ms\n", msTimeoutLoopCount);
 
 	// Find the segment address to use for the programming sequences.
-	sequenceSeg = CalculateSequenceSeg(options->destSeg, RomDataFlashLen(romData));
+	sequenceSeg = CalculateSequenceSeg(options->destSeg, romData->romSize);
 
 	// Detect the flash ROM device.
-	deviceName = DetectDeviceType(sequenceSeg);
+	deviceName = DetectDeviceType(sequenceSeg, options->destSeg);
 	if (!deviceName)
 	{
-		PrintMessage("Unable to detect SST89SF0x0A flash ROM at address ");
+		PrintMessage("Unable to detect SST39SF0x0 flash ROM at address ");
 		PrintSegAddress(sequenceSeg, options->destSeg);
 		PrintMessage(".\n");
-		return FALSE;
+		// TODO: Reinstate return.
+		// return FALSE;
 	}
 
 	// Display a warning if there is another BIOS we might be able to overwrite.
-	if (HaveOverlappingBioses(sequenceSeg, options->destSeg, RomDataFlashLen(romData)))
+	if (HaveOverlappingBioses(sequenceSeg, options->destSeg, romData->romSize))
 	{
 		PrintMessage("\n"
                      "*** WARNING: Another ROM image was found in the 32K programming range ***\n"
                      "*** starting at %04X. If there is a second SST Flash ROM in this      ***\n"
-                     "*** range, it's data may be corrupted.                                ***\n"
-                     "\n",
+                     "*** range, it's data may be become corrupted after programming.       ***\n",
 			         sequenceSeg);
 	}
 
-
 	// Print details on what we are about to do.
 	PrintMessage("\n"
-		         "Ready to program %dK to %s at address ",
-		         (unsigned int)(RomDataFlashLen(romData) / 1024L),
+		         "Will program %dK to %s at address ",
+		         (unsigned int)(romData->romSize / 1024L),
 		         deviceName);
 	PrintSegAddress(sequenceSeg, options->destSeg);
 	PrintMessage(".\n");
@@ -458,12 +504,10 @@ bool FlashRom(const Options* options, const RomData* romData)
 
 	PrintMessage("\nProgramming complete! Please reboot your computer.");
 
-	// Since the BIOS just flashed, the previous version still running is 
-	// likely no longer functioning properly. Only practical option is to
-	// reboot the computer.
+	// Since the BIOS has just been flashed, the previous version still
+	// running is unlikely to still be functioning properly. The only 
+	// practical option is to have the user reboot the computer.
 	while (1) {} 
-
-	return TRUE;
 }
 
 int main(int argc, char **argv)
