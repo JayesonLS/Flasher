@@ -49,11 +49,9 @@ static const char *PRODUCT_STRING =
 	"\n";
 
 static const char *USAGE_STRING =
-	"Usage: FLASHER [options] <memory address> <ROM image file>\n"
-	" e.g.: FLASHER C800 ABIOS.BIN\n"
-	"   or: FLASHER -qw D000 BBIOS.BIN\n"
 	"\n"
-	"Options: -qw     Be quiet about 32K window warnings.";
+	"Usage: FLASHER <memory address> <ROM image file>\n"
+	" e.g.: FLASHER C800 ABIOS.BIN\n";
 
 typedef int bool;
 
@@ -61,7 +59,6 @@ typedef struct _Options
 {
 	unsigned int destSeg;
 	const char *romImgPath;
-	bool quietWindowCheck; // True means we dont need to warn about writing less than 32K to the 32K window.
 } Options;
 
 typedef struct _RomData
@@ -71,24 +68,13 @@ typedef struct _RomData
 	unsigned long origRomSize;
 } RomData;
 
-void LogMessageNoCr(const char *msg, ...)
+void PrintMessage(const char *msg, ...)
 {
 	va_list args;
 
 	va_start(args, msg);
 	vprintf(msg, args);
 	va_end(args);
-}
-
-void LogMessage(const char *msg, ...)
-{
-	va_list args;
-
-	va_start(args, msg);
-	vprintf(msg, args);
-	va_end(args);
-
-	printf("\n");
 }
 
 void LogWarning(const char *msg, ...)
@@ -151,13 +137,14 @@ bool ParseCmdLine(int argc, char **argv, Options* optionsOut)
 		{
 			(void)nextArg; // Variable is for if we add complex options.
 			// Parse option.
-			if (stricmp(arg, "-qw") == 0)
-			{
-				optionsOut->quietWindowCheck = TRUE;
-			}
-			else
+			// if (stricmp(arg, "-option_name") == 0)
+			// {
+			// 	// set somethign here.
+			// }
+			// else
 			{
 				LogError("Invalid option '%s'", arg);
+				return FALSE;
 			}
 		}
 		else if (optionsOut->destSeg == 0)
@@ -197,7 +184,7 @@ bool ParseCmdLine(int argc, char **argv, Options* optionsOut)
 	return optionsOut->destSeg && optionsOut->romImgPath;
 }
 
-long RomDataFlashLength(const RomData *romData)
+long RomDataFlashLen(const RomData *romData)
 {
 	return (long)romData->numRomBlocks * FLASH_BLOCK_SIZE;
 }
@@ -252,9 +239,9 @@ bool LoadRomDataFromFile(const char *path, RomData *romDataOut)
 
 	if (romDataOut->origRomSize % FLASH_BLOCK_SIZE)
 	{
-		LogMessage("%dK ROM image will be rounded up to a multiple of %dK.",
-			(int)(romDataOut->origRomSize / 1024L),
-			FLASH_BLOCK_SIZE_K);
+		PrintMessage("%dK ROM image will be rounded up to a multiple of %dK.\n",
+			         (int)(romDataOut->origRomSize / 1024L),
+			         FLASH_BLOCK_SIZE_K);
 	}
 
 	return TRUE;
@@ -323,18 +310,17 @@ unsigned long CalculateMsTimeoutLoopCount()
 #endif
 }
 
-unsigned int CalculateSequenceSeg(unsigned int destSeg, long flashLength, bool quietWindowCheck)
+unsigned int CalculateSequenceSeg(unsigned int destSeg, long flashLen)
 {
 	const long sequenceWindowSize = 32L * 1024L;
 	long destAddr;
 	long seqAddr;
 	unsigned int seqSeg;
-	int charInput;
 
 	destAddr = (long)destSeg << 4L;
 	seqAddr = destAddr & ~(sequenceWindowSize - 1L);
 
-	if (seqAddr < destAddr && (seqAddr + sequenceWindowSize * 2L) <= destAddr + flashLength)
+	if (seqAddr < destAddr && (seqAddr + sequenceWindowSize * 2L) <= destAddr + flashLen)
 	{
 		// Rounded down address was outside of flashing range. 
 		// However, rounding up does fit within the flashing range,
@@ -344,66 +330,137 @@ unsigned int CalculateSequenceSeg(unsigned int destSeg, long flashLength, bool q
 
 	seqSeg = seqAddr >> 4L;
 
-	if (!quietWindowCheck)
-	{
-		if (seqAddr < destAddr || seqAddr + sequenceWindowSize > destAddr + flashLength)
-		{
-			LogMessageNoCr("\n"
-				           "The ROM does not cover entire 32K range starting at %04X.\n"
-			               "If there is a second SST Flash ROM in this address range,\n"
-				           "it's data may be corrupted.\n"
-			               "\n"
-			               "Continue Y/N? ",
-				           seqSeg);
-			
-			do
-			{
-				charInput = tolower(getch());
-			} while (charInput != 'y' && charInput != 'n');
-
-			LogMessage("%c\n", charInput);
-
-			if (charInput != 'y')
-			{
-				LogMessage("Exiting.");
-				return 0;
-			}
-		}
-	}
-	LogMessage("Sequence segment %04X", seqSeg);
-
 	return seqSeg;
 }
 
-bool FlashRom(unsigned int destSeg, const RomData* romData, const Options* options)
+bool IsBiosAtSeg(unsigned int seg)
+{
+	unsigned char *ptr = MK_FP(seg, 0);
+
+	return ptr[0] == 0x55 || ptr[1] == 0xFF;
+}
+
+bool HaveOverlappingBioses(unsigned int sequenceSeg, unsigned int destSeg, unsigned long flashLen)
+{
+	unsigned int twoKInSeg = 2 * 1024 / 16;
+	unsigned int thirtyTwoKInSeg = 32 / 16 * 1024;
+	unsigned int flashLenInSeg = (unsigned int)(flashLen / 16L);
+	unsigned int endSeg = sequenceSeg + thirtyTwoKInSeg;
+	unsigned int curr;
+
+	for (curr = sequenceSeg; curr < endSeg; curr += twoKInSeg)
+	{
+		if (curr == destSeg)
+		{
+			// Skip the explicit range of the destination we will flash to.
+			curr += flashLenInSeg;
+			continue;
+		}
+
+		if (IsBiosAtSeg(curr))
+		{
+			return TRUE;
+		}
+	}
+
+	return FALSE;
+}
+
+// Returns TRUE on Y.
+bool GetYNConfirmation()
+{
+	int charInput;
+
+	do
+	{
+		charInput = tolower(getch());
+	} while (charInput != 'y' && charInput != 'n');
+
+	PrintMessage("%c\n", charInput);
+
+	return charInput == 'y';
+}
+
+void PrintSegAddress(unsigned int seqSeg, unsigned int destSeg)
+{
+	PrintMessage("%04X", destSeg);
+
+	if (seqSeg != destSeg)
+	{
+		PrintMessage(" (sequence address % 04X)", seqSeg);
+	}
+}
+
+const char *DetectDeviceType(unsigned int seqSeg)
+{
+
+	return NULL;
+}
+
+bool FlashRom(const Options* options, const RomData* romData)
 {
 	unsigned long msTimeoutLoopCount;
 	unsigned int sequenceSeg;
+	const char *deviceName;
+
+	//Calibrate timeout timer.
+	PrintMessage("Calibrating timeout timer...");
+	msTimeoutLoopCount =
+		CalculateMsTimeoutLoopCount();
+	PrintMessage(" %ld loops per ms\n", msTimeoutLoopCount);
 
 	// Find the segment address to use for the programming sequences.
-	sequenceSeg = CalculateSequenceSeg(destSeg, RomDataFlashLength(romData), options->quietWindowCheck);
-	if (!sequenceSeg)
+	sequenceSeg = CalculateSequenceSeg(options->destSeg, RomDataFlashLen(romData));
+
+	// Detect the flash ROM device.
+	deviceName = DetectDeviceType(sequenceSeg);
+	if (!deviceName)
 	{
+		PrintMessage("Unable to detect SST89SF0x0A flash ROM at address ");
+		PrintSegAddress(sequenceSeg, options->destSeg);
+		PrintMessage(".\n");
 		return FALSE;
 	}
 
-	//Calibrate timeout timer.
-	LogMessageNoCr("Calibrating timeout timer...");
-	msTimeoutLoopCount =
-		CalculateMsTimeoutLoopCount();
-	LogMessage(" %ld loops per ms", msTimeoutLoopCount);
+	// Display a warning if there is another BIOS we might be able to overwrite.
+	if (HaveOverlappingBioses(sequenceSeg, options->destSeg, RomDataFlashLen(romData)))
+	{
+		PrintMessage("\n"
+                     "*** WARNING: Another ROM image was found in the 32K programming range ***\n"
+                     "*** starting at %04X. If there is a second SST Flash ROM in this      ***\n"
+                     "*** range, it's data may be corrupted.                                ***\n"
+                     "\n",
+			         sequenceSeg);
+	}
 
-	// TODO: Detect device, and if OK, display message.
+
+	// Print details on what we are about to do.
+	PrintMessage("\n"
+		         "Ready to program %dK to %s at address ",
+		         (unsigned int)(RomDataFlashLen(romData) / 1024L),
+		         deviceName);
+	PrintSegAddress(sequenceSeg, options->destSeg);
+	PrintMessage(".\n");
+
+	// Check that user wants to continue.
+	PrintMessage("Continue Y/N? ");
+	if (!GetYNConfirmation())
+	{
+		PrintMessage("Exiting.\n");
+		return FALSE;
+	}
+
+	PrintMessage("Programming...");
+
 	// TODO: Disable interrupts.
-	// TODO: Do the programming. Erase, then write.
+	// TODO: Do the programming. Erase, then write each block.
 	// TODO: Enable interrupts.
-	// TODO: Prompt the user to reboot.
-	// TODO: Lock the computer.
 
-	LogMessageNoCr("\nProgramming complete! Please reboot your computer.");
+	PrintMessage("\nProgramming complete! Please reboot your computer.");
 
-	// Since the BIOS just flashed is likely no longer functioning properly, 
-	// the computer needs to be rebooted.
+	// Since the BIOS just flashed, the previous version still running is 
+	// likely no longer functioning properly. Only practical option is to
+	// reboot the computer.
 	while (1) {} 
 
 	return TRUE;
@@ -415,7 +472,7 @@ int main(int argc, char **argv)
 	RomData romData;
 	bool flashResult;
 
-	printf(PRODUCT_STRING);
+	PrintMessage(PRODUCT_STRING);
 
 	if (!CheckMemoryModel())
 	{
@@ -424,8 +481,7 @@ int main(int argc, char **argv)
 
 	if (!ParseCmdLine(argc, argv, &options))
 	{
-		printf("\n");
-		printf(USAGE_STRING);
+		PrintMessage(USAGE_STRING);
 		return 1;
 	}
 
@@ -435,7 +491,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	flashResult = FlashRom(options.destSeg, &romData, &options);
+	flashResult = FlashRom(&options, &romData);
 
 	FreeRomData(&romData);
 	
