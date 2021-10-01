@@ -22,6 +22,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <ctype.h>
+#include <conio.h>
 
 #if defined(MSDOS) || defined(_MSDOS) || defined(__MSDOS__) || defined(__TURBOC__)
 #include <dos.h>
@@ -33,9 +35,9 @@
 #define FALSE 0
 
 #define MAX_ROM_SIZE_K 256
-#define ROM_BLOCK_SIZE_K 2
+#define ROM_BLOCK_SIZE__K 2
 #define FLASH_BLOCK_SIZE_K 4
-#define ROM_BLOCK_SIZE (ROM_BLOCK_SIZE_K * 1024)
+#define ROM_BLOCK_SIZE_ (ROM_BLOCK_SIZE__K * 1024)
 #define FLASH_BLOCK_SIZE (FLASH_BLOCK_SIZE_K * 1024)
 #define MAX_ROM_BLOCK_COUNT (MAX_ROM_SIZE_K / FLASH_BLOCK_SIZE_K)
 
@@ -47,15 +49,19 @@ static const char *PRODUCT_STRING =
 	"\n";
 
 static const char *USAGE_STRING =
-	"Usage: FLASHER <memory address> <ROM image file>\n"
-	" e.g.: FLASHER C800 ABIOS.BIN\n";
+	"Usage: FLASHER [options] <memory address> <ROM image file>\n"
+	" e.g.: FLASHER C800 ABIOS.BIN\n"
+	"   or: FLASHER -qw D000 BBIOS.BIN\n"
+	"\n"
+	"Options: -qw     Be quiet about 32K window warnings.";
 
 typedef int bool;
 
 typedef struct _Options
 {
-	unsigned int destAddr;
+	unsigned int destSeg;
 	const char *romImgPath;
+	bool quietWindowCheck; // True means we dont need to warn about writing less than 32K to the 32K window.
 } Options;
 
 typedef struct _RomData
@@ -140,40 +146,40 @@ bool ParseCmdLine(int argc, char **argv, Options* optionsOut)
 		const char *nextArg = (i + 1 < argc) ? argv[i + 1] : NULL;
 
 		if (arg[0] == '-' && 
-			!optionsOut->destAddr && 
+			!optionsOut->destSeg && 
 			!optionsOut->romImgPath)
 		{
 			(void)nextArg; // Variable is for if we add complex options.
 			// Parse option.
-			//if (....)
-			//{
-			//
-			//}
-			//else
+			if (stricmp(arg, "-qw") == 0)
+			{
+				optionsOut->quietWindowCheck = TRUE;
+			}
+			else
 			{
 				LogError("Invalid option '%s'", arg);
 			}
 		}
-		else if (optionsOut->destAddr == 0)
+		else if (optionsOut->destSeg == 0)
 		{
 			// Parse address.
-			unsigned int destAddr = (unsigned int)strtol(arg, NULL, 16);
+			unsigned int destSeg = (unsigned int)strtol(arg, NULL, 16);
 
 			static const int BLOCK_SIZE =
-				FLASH_BLOCK_SIZE > ROM_BLOCK_SIZE ?
-				FLASH_BLOCK_SIZE : ROM_BLOCK_SIZE;
+				FLASH_BLOCK_SIZE > ROM_BLOCK_SIZE_ ?
+				FLASH_BLOCK_SIZE : ROM_BLOCK_SIZE_;
 
-			if (destAddr == 0 ||
+			if (destSeg == 0 ||
 				strlen(arg) > 4 ||
-				destAddr % (BLOCK_SIZE / 16) != 0 ||
-				destAddr < 0xA000)
+				destSeg % (BLOCK_SIZE / 16) != 0 ||
+				destSeg < 0xA000)
 			{
 				LogError("Memory address must be between A000 and F800 and on a %dK boundary.",
 					BLOCK_SIZE / 1024);
 				return FALSE;
 			}
 
-			optionsOut->destAddr = destAddr;
+			optionsOut->destSeg = destSeg;
 		}
 		else if (optionsOut->romImgPath == NULL)
 		{
@@ -188,10 +194,10 @@ bool ParseCmdLine(int argc, char **argv, Options* optionsOut)
 		}
 	}
 
-	return optionsOut->destAddr && optionsOut->romImgPath;
+	return optionsOut->destSeg && optionsOut->romImgPath;
 }
 
-long RomDataFlashSize(const RomData *romData)
+long RomDataFlashLength(const RomData *romData)
 {
 	return (long)romData->numRomBlocks * FLASH_BLOCK_SIZE;
 }
@@ -237,10 +243,10 @@ bool LoadRomDataFromFile(const char *path, RomData *romDataOut)
 		return FALSE;
 	}
 
-	if (romDataOut->origRomSize % ROM_BLOCK_SIZE)
+	if (romDataOut->origRomSize % ROM_BLOCK_SIZE_)
 	{
 		LogError("ROM image file must be a multiple of %dK.",
-			ROM_BLOCK_SIZE_K);
+			ROM_BLOCK_SIZE__K);
 		return FALSE;
 	}
 
@@ -292,6 +298,11 @@ unsigned long WaitForValue(unsigned char *addr, unsigned char value, unsigned lo
 // Returns the number of polling loops needed for ~1ms delay.
 unsigned long CalculateMsTimeoutLoopCount()
 {
+#ifdef __FAKEDOS__
+	// Can't calculate this outside of DOS.
+	// Fudge a number just so code will run.
+	return 1000;
+#else
 	unsigned char *biosTimerLsb;
 	unsigned char startValue;
 	unsigned long tickLoopCount;
@@ -309,11 +320,72 @@ unsigned long CalculateMsTimeoutLoopCount()
 
 	// Tick is approximately 55ms, so scale accordingly.
 	return tickLoopCount / 55;
+#endif
 }
 
-bool FlashRom(unsigned int destAddr, const RomData* romData)
+unsigned int CalculateSequenceSeg(unsigned int destSeg, long flashLength, bool quietWindowCheck)
+{
+	const long sequenceWindowSize = 32L * 1024L;
+	long destAddr;
+	long seqAddr;
+	unsigned int seqSeg;
+	int charInput;
+
+	destAddr = (long)destSeg << 4L;
+	seqAddr = destAddr & ~(sequenceWindowSize - 1L);
+
+	if (seqAddr < destAddr && (seqAddr + sequenceWindowSize * 2L) <= destAddr + flashLength)
+	{
+		// Rounded down address was outside of flashing range. 
+		// However, rounding up does fit within the flashing range,
+		// so go ahead and round up.
+		seqAddr += sequenceWindowSize;
+	}
+
+	seqSeg = seqAddr >> 4L;
+
+	if (!quietWindowCheck)
+	{
+		if (seqAddr < destAddr || seqAddr + sequenceWindowSize > destAddr + flashLength)
+		{
+			LogMessageNoCr("\n"
+				           "The ROM does not cover entire 32K range starting at %04X.\n"
+			               "If there is a second SST Flash ROM in this address range,\n"
+				           "it's data may be corrupted.\n"
+			               "\n"
+			               "Continue Y/N? ",
+				           seqSeg);
+			
+			do
+			{
+				charInput = tolower(getch());
+			} while (charInput != 'y' && charInput != 'n');
+
+			LogMessage("%c\n", charInput);
+
+			if (charInput != 'y')
+			{
+				LogMessage("Exiting.");
+				return 0;
+			}
+		}
+	}
+	LogMessage("Sequence segment %04X", seqSeg);
+
+	return seqSeg;
+}
+
+bool FlashRom(unsigned int destSeg, const RomData* romData, const Options* options)
 {
 	unsigned long msTimeoutLoopCount;
+	unsigned int sequenceSeg;
+
+	// Find the segment address to use for the programming sequences.
+	sequenceSeg = CalculateSequenceSeg(destSeg, RomDataFlashLength(romData), options->quietWindowCheck);
+	if (!sequenceSeg)
+	{
+		return FALSE;
+	}
 
 	//Calibrate timeout timer.
 	LogMessageNoCr("Calibrating timeout timer...");
@@ -321,8 +393,6 @@ bool FlashRom(unsigned int destAddr, const RomData* romData)
 		CalculateMsTimeoutLoopCount();
 	LogMessage(" %ld loops per ms", msTimeoutLoopCount);
 
-	// TODO: Compute sequence base address.
-	// TODO: Warn if sequence will run outside of specified ROM range.
 	// TODO: Detect device, and if OK, display message.
 	// TODO: Disable interrupts.
 	// TODO: Do the programming. Erase, then write.
@@ -330,7 +400,13 @@ bool FlashRom(unsigned int destAddr, const RomData* romData)
 	// TODO: Prompt the user to reboot.
 	// TODO: Lock the computer.
 
-	return FALSE;
+	LogMessageNoCr("\nProgramming complete! Please reboot your computer.");
+
+	// Since the BIOS just flashed is likely no longer functioning properly, 
+	// the computer needs to be rebooted.
+	while (1) {} 
+
+	return TRUE;
 }
 
 int main(int argc, char **argv)
@@ -359,7 +435,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	flashResult = FlashRom(options.destAddr, &romData);
+	flashResult = FlashRom(options.destSeg, &romData, &options);
 
 	FreeRomData(&romData);
 	
