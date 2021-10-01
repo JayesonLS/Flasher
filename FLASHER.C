@@ -41,10 +41,13 @@
 #define FLASH_BLOCK_SIZE (FLASH_BLOCK_SIZE_K * 1024)
 #define MAX_ROM_BLOCK_COUNT (MAX_ROM_SIZE_K / FLASH_BLOCK_SIZE_K)
 
+#define BYTE_WRITE_TIMEOUT_MS 1ul // Data sheet says only 14us.
+#define SECTOR_ERASE_TIMEOUT_MS 250ul // 10x data sheet max time.
+#define CHIP_ERASE_TIMEOUT_MS 1000ul // 10x data sheet max time.
 #define MAX_TIMEOUT_VALUE 0xFFFFFFFF
 
 static const char *PRODUCT_STRING =
-	"Flasher Version 0.1 - Programs SST39SF0x0 Flash ROMs\n"
+	"Flasher Version 0.9b1 - Programs SST39SF0x0 Flash ROMs\n"
 	"Copyright (C) 2021 Titanium Studios Pty Ltd\n"
 	"\n";
 
@@ -64,7 +67,7 @@ typedef struct _Options
 typedef struct _RomData
 {
 	unsigned char *romBlocks[MAX_ROM_BLOCK_COUNT];
-	unsigned int numRomBlocks;
+	int numRomBlocks;
 	unsigned long romSize;
 	unsigned long origRomSize;
 } RomData;
@@ -264,13 +267,13 @@ void FreeRomData(RomData *romData)
 unsigned long WaitForValue(unsigned char *addr, unsigned char value, unsigned long timeoutCount)
 {
 	unsigned long count;
-	volatile unsigned char *addrVol;
+	volatile unsigned char *addrVolatile;
 
-	addrVol = addr;
+	addrVolatile = addr;
 
 	for (count = 0; count < timeoutCount; count++)
 	{
-		if (*addrVol == value)
+		if (*addrVolatile == value)
 		{
 			return count;
 		}
@@ -444,11 +447,117 @@ const char *DetectDeviceType(unsigned int seqSeg, unsigned int destSeg)
 	return NULL;
 }
 
-bool FlashRom(const Options* options, const RomData* romData)
+bool EraseBlock(unsigned int seqSeg, unsigned char *dest, unsigned long timeoutLoopCount)
+{
+	volatile unsigned char *seqPtr = MK_FP(seqSeg, 0);
+
+	seqPtr[0x5555] = 0xAA;
+	seqPtr[0x2AAA] = 0x55;
+	seqPtr[0x5555] = 0x80;
+	seqPtr[0x5555] = 0xAA;
+	seqPtr[0x2AAA] = 0x55;
+	dest[0] = 0x30;
+
+	return WaitForValue(dest, 0xFF, timeoutLoopCount) != MAX_TIMEOUT_VALUE;
+}
+
+bool ProgramBlock(unsigned int seqSeg, unsigned char *source, unsigned char *dest, unsigned long timeoutLoopCount)
+{
+	volatile unsigned char *seqPtr = MK_FP(seqSeg, 0);
+	int i;
+
+	for (i = 0; i < FLASH_BLOCK_SIZE; i++)
+	{
+		seqPtr[0x5555] = 0xAA;
+		seqPtr[0x2AAA] = 0x55;
+		seqPtr[0x5555] = 0xA0;
+
+		dest[i] = source[i];
+
+		if (WaitForValue(dest + i, source[i], timeoutLoopCount) == MAX_TIMEOUT_VALUE)
+		{
+			return FALSE;
+		}
+	}
+
+	return TRUE;
+}
+
+// Returns number of blocks flashed.
+// 0 if none flashed.
+// -1 on error.
+int FlashRom(unsigned int seqSeg, unsigned int destSeg, const RomData* romData, unsigned long msTimeoutLoopCount)
+{
+	const int blockSizeInSeg = FLASH_BLOCK_SIZE >> 4;
+	const unsigned long sectorEraseTimeout = SECTOR_ERASE_TIMEOUT_MS * msTimeoutLoopCount;
+	const unsigned long byteWriteTimeout = BYTE_WRITE_TIMEOUT_MS * msTimeoutLoopCount;
+	unsigned char *destPtr;
+	int numBlocksFlashed = 0;
+	const char *errorString = NULL;
+	int blockIndex;
+
+	DisableInterrupts();
+
+	for (blockIndex = 0; blockIndex < romData->numRomBlocks; blockIndex++, destSeg += blockSizeInSeg)
+	{
+		destPtr = MK_FP(destSeg, 0);
+
+        if (memcmp(destPtr, romData->romBlocks[blockIndex], FLASH_BLOCK_SIZE) == 0)
+		{
+			continue;
+		}
+
+		if (!EraseBlock(seqSeg, destPtr, sectorEraseTimeout))
+		{
+			errorString = "Timeout erasing block.";
+			break;
+		}
+
+		if (!ProgramBlock(seqSeg, romData->romBlocks[blockIndex], destPtr, byteWriteTimeout))
+		{
+			errorString = "Timeout programming block.";
+			break;
+		}
+
+		numBlocksFlashed++;
+	}
+
+	EnableInterrupts();
+
+	if (errorString)
+	{
+		LogError(errorString);
+		return -1;
+	}
+
+	return numBlocksFlashed;
+}
+
+bool VerifyRom(unsigned int destSeg, const RomData* romData)
+{
+	const int blockSizeInSeg = FLASH_BLOCK_SIZE >> 4;
+	unsigned char *destPtr;
+	int blockIndex;
+
+	for (blockIndex = 0; blockIndex < romData->numRomBlocks; blockIndex++, destSeg += blockSizeInSeg)
+	{
+		destPtr = MK_FP(destSeg, 0);
+
+		if (memcmp(destPtr, romData->romBlocks[blockIndex], FLASH_BLOCK_SIZE) != 0)
+		{
+			return FALSE;
+		}
+	}
+
+	return TRUE;
+}
+
+bool ProcessRom(const Options* options, const RomData* romData)
 {
 	unsigned long msTimeoutLoopCount;
 	unsigned int sequenceSeg;
 	const char *deviceName;
+	int numBlocksFlashed;
 
 	//Calibrate timeout timer.
 	PrintMessage("Calibrating timeout timer...");
@@ -466,8 +575,7 @@ bool FlashRom(const Options* options, const RomData* romData)
 		PrintMessage("Unable to detect SST39SF0x0 flash ROM at address ");
 		PrintSegAddress(sequenceSeg, options->destSeg);
 		PrintMessage(".\n");
-		// TODO: Reinstate return.
-		// return FALSE;
+		return FALSE;
 	}
 
 	// Display a warning if there is another BIOS we might be able to overwrite.
@@ -498,14 +606,30 @@ bool FlashRom(const Options* options, const RomData* romData)
 
 	PrintMessage("Programming...");
 
-	// TODO: Disable interrupts.
-	// TODO: Do the programming. Erase, then write each block.
-	// TODO: Enable interrupts.
+	numBlocksFlashed = FlashRom(sequenceSeg, options->destSeg, romData, msTimeoutLoopCount);
+	if (numBlocksFlashed == 0)
+	{
+		PrintMessage("\nFlash ROM already up to date. No programming done.\n");
+		return TRUE;
+	}
 
-	PrintMessage("\nProgramming complete! Please reboot your computer.");
+	if (numBlocksFlashed < 0)
+	{
+		PrintMessage("\nError during programming. The flash ROM might now have corrupt data.\n"
+			         "Please reboot your computer.");
+	}
+	else if (VerifyRom(options->destSeg, romData))
+	{
+		PrintMessage("\nProgramming complete! Please reboot your computer.");
+	}
+	else
+	{
+		PrintMessage("\nVerify failed! The flash ROM does not have correct data.\n"
+				        "Please reboot your computer.");
+	}
 
 	// Since the BIOS has just been flashed, the previous version still
-	// running is unlikely to still be functioning properly. The only 
+	// running is unlikely to continue to function properly. The only 
 	// practical option is to have the user reboot the computer.
 	while (1) {} 
 }
@@ -535,7 +659,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	flashResult = FlashRom(&options, &romData);
+	flashResult = ProcessRom(&options, &romData);
 
 	FreeRomData(&romData);
 	
