@@ -1,6 +1,6 @@
 # SSTFLASH
-DOS command line tool to program SST89SF0x0 (SST89SF010A,
-SST89SF020A, SST89SF040) flash ROMs.
+DOS command line tool to program SST39SF0x0 (SST39SF010A,
+SST39SF020A, SST39SF040) flash ROMs.
 
 To rebuild the executable, open the PRJ file in Turbo C++ 3.0
 and hit F9. The source is in C and can likely be compiled in
