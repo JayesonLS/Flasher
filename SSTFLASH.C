@@ -47,493 +47,493 @@
 #define MAX_TIMEOUT_VALUE 0xFFFFFFFF
 
 static const char *PRODUCT_STRING =
-	"SSTFLASH Version 0.9b1 - Programs SST39SF0x0 Flash ROMs\n"
-	"Copyright (C) 2021 Titanium Studios Pty Ltd\n"
-	"\n";
+    "SSTFLASH Version 0.9b1 - Programs SST39SF0x0 Flash ROMs\n"
+    "Copyright (C) 2021 Titanium Studios Pty Ltd\n"
+    "\n";
 
 static const char *USAGE_STRING =
-	"\n"
-	"Usage: SSTFLASH [options] <memory address> <ROM image file>\n"
     "\n"
-	"Examples:\n"
-	"    SSTFLASH C800 ABIOS.BIN\n"
-	"    SSTFLASH -size 32 D000 BBIOS.BIN\n"
-	"\n"
-	"Options:\n"
-	"-size <size in K>: Override amount of flash memory written.\n"
-	"                   Default is size of file. May be larger or\n"
+    "Usage: SSTFLASH [options] <memory address> <ROM image file>\n"
+    "\n"
+    "Examples:\n"
+    "    SSTFLASH C800 ABIOS.BIN\n"
+    "    SSTFLASH -size 32 D000 BBIOS.BIN\n"
+    "\n"
+    "Options:\n"
+    "-size <size in K>: Override amount of flash memory written.\n"
+    "                   Default is size of file. May be larger or\n"
     "                   smaller than file size.\n";
 
 typedef int bool;
 
 typedef struct _Options
 {
-	unsigned int destSeg;
-	const char *romImgPath;
-	int sizeOverrideK;
+    unsigned int destSeg;
+    const char *romImgPath;
+    int sizeOverrideK;
 } Options;
 
 typedef struct _RomData
 {
-	unsigned char *romBlocks[MAX_ROM_BLOCK_COUNT];
-	int numRomBlocks;
-	unsigned long romSize;
-	unsigned long origRomSize;
+    unsigned char *romBlocks[MAX_ROM_BLOCK_COUNT];
+    int numRomBlocks;
+    unsigned long romSize;
+    unsigned long origRomSize;
 } RomData;
 
 void PrintMessage(const char *msg, ...)
 {
-	va_list args;
+    va_list args;
 
-	va_start(args, msg);
-	vprintf(msg, args);
-	va_end(args);
+    va_start(args, msg);
+    vprintf(msg, args);
+    va_end(args);
 }
 
 void LogWarning(const char *msg, ...)
 {
-	va_list args;
+    va_list args;
 
-	printf("WARNING: ");
+    printf("WARNING: ");
 
-	va_start(args, msg);
-	vprintf(msg, args);
-	va_end(args);
+    va_start(args, msg);
+    vprintf(msg, args);
+    va_end(args);
 
-	printf("\n");
+    printf("\n");
 }
 
 void LogError(const char *msg, ...)
 {
-	va_list args;
+    va_list args;
 
-	printf("ERROR: ");
+    printf("ERROR: ");
 
-	va_start(args, msg);
-	vprintf(msg, args);
-	va_end(args);
+    va_start(args, msg);
+    vprintf(msg, args);
+    va_end(args);
 
-	printf("\n");
+    printf("\n");
 }
 
 bool CheckMemoryModel()
 {
-	// We need a memory model with far pointers.
-	// So a non-specific pointer should work the same
-	// as an explicitly far pointer.
-	void *ptr = MK_FP(0, 0);
-	void far *farPtr = MK_FP(0, 0);
+    // We need a memory model with far pointers.
+    // So a non-specific pointer should work the same
+    // as an explicitly far pointer.
+    void *ptr = MK_FP(0, 0);
+    void far *farPtr = MK_FP(0, 0);
 
-	if ((void far *)ptr != farPtr)
-	{
-		LogError("This app must be compiled with a memory model that uses far pointers.");
-		return FALSE;
-	}
+    if ((void far *)ptr != farPtr)
+    {
+        LogError("This app must be compiled with a memory model that uses far pointers.");
+        return FALSE;
+    }
 
-	return TRUE;
+    return TRUE;
 }
 
 bool ParseCmdLine(int argc, char **argv, Options* optionsOut)
 {
-	int i;
+    int i;
 
-	memset(optionsOut, 0, sizeof(Options));
+    memset(optionsOut, 0, sizeof(Options));
 
-	for (i = 1; i < argc; i++)
-	{
-		const char *arg = argv[i];
-		const char *nextArg = (i + 1 < argc) ? argv[i + 1] : NULL;
+    for (i = 1; i < argc; i++)
+    {
+        const char *arg = argv[i];
+        const char *nextArg = (i + 1 < argc) ? argv[i + 1] : NULL;
 
-		if ((arg[0] == '-' || arg[0] == '/') &&
-			!optionsOut->destSeg && 
-			!optionsOut->romImgPath)
-		{
-			const char *opt = arg + 1;
+        if ((arg[0] == '-' || arg[0] == '/') &&
+            !optionsOut->destSeg && 
+            !optionsOut->romImgPath)
+        {
+            const char *opt = arg + 1;
 
-			// Parse option.
-			if (stricmp(opt, "?") == 0 || stricmp(opt, "h") == 0 || stricmp(opt, "help") == 0)
-			{
-				return FALSE; // Returning an error will result in the usage being displayed.
-			}
-			if (stricmp(opt, "size") == 0)
-			{
-				if (!nextArg)
-				{
-					LogError("Size option missing size override value.");
-					return FALSE;
-				}
+            // Parse option.
+            if (stricmp(opt, "?") == 0 || stricmp(opt, "h") == 0 || stricmp(opt, "help") == 0)
+            {
+                return FALSE; // Returning an error will result in the usage being displayed.
+            }
+            if (stricmp(opt, "size") == 0)
+            {
+                if (!nextArg)
+                {
+                    LogError("Size option missing size override value.");
+                    return FALSE;
+                }
 
-				optionsOut->sizeOverrideK = atoi(nextArg);
+                optionsOut->sizeOverrideK = atoi(nextArg);
 
-				if (optionsOut->sizeOverrideK <= 0 || 
-					optionsOut->sizeOverrideK > MAX_ROM_SIZE_K ||
-					optionsOut->sizeOverrideK %2 != 0)
-				{
-					LogError("Size override must be a multiple of 2 and %d and a multiple of 2.", MAX_ROM_SIZE_K);
-					return FALSE;
-				}
-				
-				i++; // Skip past nextArg.
-			}
-			else
-			{
-				LogError("Invalid option '%s'", arg);
-				return FALSE;
-			}
-		}
-		else if (optionsOut->destSeg == 0)
-		{
-			// Parse address.
-			unsigned int destSeg = (unsigned int)strtol(arg, NULL, 16);
+                if (optionsOut->sizeOverrideK <= 0 || 
+                    optionsOut->sizeOverrideK > MAX_ROM_SIZE_K ||
+                    optionsOut->sizeOverrideK %2 != 0)
+                {
+                    LogError("Size override must be a multiple of 2 and %d and a multiple of 2.", MAX_ROM_SIZE_K);
+                    return FALSE;
+                }
+                
+                i++; // Skip past nextArg.
+            }
+            else
+            {
+                LogError("Invalid option '%s'", arg);
+                return FALSE;
+            }
+        }
+        else if (optionsOut->destSeg == 0)
+        {
+            // Parse address.
+            unsigned int destSeg = (unsigned int)strtol(arg, NULL, 16);
 
-			static const int BLOCK_SIZE =
-				FLASH_BLOCK_SIZE > ROM_BLOCK_SIZE_ ?
-				FLASH_BLOCK_SIZE : ROM_BLOCK_SIZE_;
+            static const int BLOCK_SIZE =
+                FLASH_BLOCK_SIZE > ROM_BLOCK_SIZE_ ?
+                FLASH_BLOCK_SIZE : ROM_BLOCK_SIZE_;
 
-			if (destSeg == 0 ||
-				strlen(arg) > 4 ||
-				destSeg % (BLOCK_SIZE / 16) != 0 ||
-				destSeg < 0xA000)
-			{
-				LogError("Memory address must be between A000 and F800 and on a %dK boundary.",
-					BLOCK_SIZE / 1024);
-				return FALSE;
-			}
+            if (destSeg == 0 ||
+                strlen(arg) > 4 ||
+                destSeg % (BLOCK_SIZE / 16) != 0 ||
+                destSeg < 0xA000)
+            {
+                LogError("Memory address must be between A000 and F800 and on a %dK boundary.",
+                    BLOCK_SIZE / 1024);
+                return FALSE;
+            }
 
-			optionsOut->destSeg = destSeg;
-		}
-		else if (optionsOut->romImgPath == NULL)
-		{
-			// Parse ROM image address.
-			optionsOut->romImgPath = arg;
-		}
-		else
-		{
-			// Unexpected argument.
-			LogError("Unexpected argument '%s'", arg);
-			return FALSE;
-		}
-	}
+            optionsOut->destSeg = destSeg;
+        }
+        else if (optionsOut->romImgPath == NULL)
+        {
+            // Parse ROM image address.
+            optionsOut->romImgPath = arg;
+        }
+        else
+        {
+            // Unexpected argument.
+            LogError("Unexpected argument '%s'", arg);
+            return FALSE;
+        }
+    }
 
-	return optionsOut->destSeg && optionsOut->romImgPath;
+    return optionsOut->destSeg && optionsOut->romImgPath;
 }
 
 bool LoadRomDataFromFile(const Options *options, RomData *romDataOut)
 {
-	FILE *f;
-	long sizeRemaining;
+    FILE *f;
+    long sizeRemaining;
 
-	memset(romDataOut, 0, sizeof(RomData));
+    memset(romDataOut, 0, sizeof(RomData));
 
-	f = fopen(options->romImgPath, "rb");
-	if (!f)
-	{
-		LogError("Unable to open file '%s'", options->romImgPath);
-		return FALSE;
-	}
+    f = fopen(options->romImgPath, "rb");
+    if (!f)
+    {
+        LogError("Unable to open file '%s'", options->romImgPath);
+        return FALSE;
+    }
 
-	sizeRemaining = (long)MAX_ROM_BLOCK_COUNT * (long)FLASH_BLOCK_SIZE;
-	if (options->sizeOverrideK > 0)
-	{
-		sizeRemaining = (long)(options->sizeOverrideK) * 1024l;
-	}
+    sizeRemaining = (long)MAX_ROM_BLOCK_COUNT * (long)FLASH_BLOCK_SIZE;
+    if (options->sizeOverrideK > 0)
+    {
+        sizeRemaining = (long)(options->sizeOverrideK) * 1024l;
+    }
 
-	while (!feof(f) && sizeRemaining > 0)
-	{
-		unsigned char *buffer;
-		unsigned int readSize;
+    while (!feof(f) && sizeRemaining > 0)
+    {
+        unsigned char *buffer;
+        unsigned int readSize;
 
-		if (romDataOut->numRomBlocks >= MAX_ROM_BLOCK_COUNT)
-		{
-			fclose(f);
+        if (romDataOut->numRomBlocks >= MAX_ROM_BLOCK_COUNT)
+        {
+            fclose(f);
 
-			LogError("ROM image file exceeds max size of %dK", 
-				MAX_ROM_SIZE_K);
-			return FALSE;
-		}
+            LogError("ROM image file exceeds max size of %dK", 
+                MAX_ROM_SIZE_K);
+            return FALSE;
+        }
 
-		buffer = (unsigned char *)malloc(FLASH_BLOCK_SIZE);
-		memset(buffer, 0, FLASH_BLOCK_SIZE);
-		romDataOut->romBlocks[romDataOut->numRomBlocks] = buffer;
-		readSize = sizeRemaining < (long)FLASH_BLOCK_SIZE ? (unsigned int)sizeRemaining : FLASH_BLOCK_SIZE;
-		sizeRemaining -= readSize;
-		romDataOut->origRomSize += (int)fread(buffer, 1, readSize, f);
-		romDataOut->numRomBlocks++;
-	}
+        buffer = (unsigned char *)malloc(FLASH_BLOCK_SIZE);
+        memset(buffer, 0, FLASH_BLOCK_SIZE);
+        romDataOut->romBlocks[romDataOut->numRomBlocks] = buffer;
+        readSize = sizeRemaining < (long)FLASH_BLOCK_SIZE ? (unsigned int)sizeRemaining : FLASH_BLOCK_SIZE;
+        sizeRemaining -= readSize;
+        romDataOut->origRomSize += (int)fread(buffer, 1, readSize, f);
+        romDataOut->numRomBlocks++;
+    }
 
-	fclose(f);
+    fclose(f);
 
-	// Add 4K blocks if there is remaining size.
-	if (options->sizeOverrideK > 0)
-	{
-		while (sizeRemaining > 0)
-		{
-			unsigned char *buffer = (unsigned char *)malloc(FLASH_BLOCK_SIZE);
-			memset(buffer, 0, FLASH_BLOCK_SIZE);
-			romDataOut->romBlocks[romDataOut->numRomBlocks++] = buffer;
-			sizeRemaining -= FLASH_BLOCK_SIZE;
-		}
-	}
+    // Add 4K blocks if there is remaining size.
+    if (options->sizeOverrideK > 0)
+    {
+        while (sizeRemaining > 0)
+        {
+            unsigned char *buffer = (unsigned char *)malloc(FLASH_BLOCK_SIZE);
+            memset(buffer, 0, FLASH_BLOCK_SIZE);
+            romDataOut->romBlocks[romDataOut->numRomBlocks++] = buffer;
+            sizeRemaining -= FLASH_BLOCK_SIZE;
+        }
+    }
 
-	romDataOut->romSize = (unsigned long)romDataOut->numRomBlocks * (unsigned long)FLASH_BLOCK_SIZE;
+    romDataOut->romSize = (unsigned long)romDataOut->numRomBlocks * (unsigned long)FLASH_BLOCK_SIZE;
 
-	if (!romDataOut->origRomSize)
-	{
-		LogError("ROM image file is empty.");
-		return FALSE;
-	}
+    if (!romDataOut->origRomSize)
+    {
+        LogError("ROM image file is empty.");
+        return FALSE;
+    }
 
-	if (romDataOut->origRomSize % ROM_BLOCK_SIZE__K)
-	{
-		LogError("ROM image file must be a multiple of %dK.",
-			ROM_BLOCK_SIZE__K);
-		return FALSE;
-	}
+    if (romDataOut->origRomSize % ROM_BLOCK_SIZE__K)
+    {
+        LogError("ROM image file must be a multiple of %dK.",
+            ROM_BLOCK_SIZE__K);
+        return FALSE;
+    }
 
-	if (romDataOut->origRomSize < romDataOut->romSize)
-	{
-		PrintMessage("%dK image will be rounded up to %dK (4K multiple) with zeros.\n",
-			         (int)(romDataOut->origRomSize / 1024L),
-			         (int)(romDataOut->romSize / 1024L));
-	}
+    if (romDataOut->origRomSize < romDataOut->romSize)
+    {
+        PrintMessage("%dK image will be rounded up to %dK (4K multiple) with zeros.\n",
+                     (int)(romDataOut->origRomSize / 1024L),
+                     (int)(romDataOut->romSize / 1024L));
+    }
 
-	return TRUE;
+    return TRUE;
 }
 
 void FreeRomData(RomData *romData)
 {
-	int i;
+    int i;
 
-	for (i = 0; i < MAX_ROM_BLOCK_COUNT; i++)
-	{
-		if (romData->romBlocks[i] != NULL)
-		{
-			free(romData->romBlocks[i]);
-		}
-	}
+    for (i = 0; i < MAX_ROM_BLOCK_COUNT; i++)
+    {
+        if (romData->romBlocks[i] != NULL)
+        {
+            free(romData->romBlocks[i]);
+        }
+    }
 
-	memset(romData, 0, sizeof(RomData));
+    memset(romData, 0, sizeof(RomData));
 }
 
 // Waits for the value to be found at *addr. Loop timeout count is provided.
 // Returns actual number of loops waited.
 unsigned long WaitForValue(unsigned char *addr, unsigned char value, unsigned long timeoutCount)
 {
-	unsigned long count;
-	volatile unsigned char *addrVolatile;
+    unsigned long count;
+    volatile unsigned char *addrVolatile;
 
-	addrVolatile = addr;
+    addrVolatile = addr;
 
-	for (count = 0; count < timeoutCount; count++)
-	{
-		if (*addrVolatile == value)
-		{
-			return count;
-		}
-	}
+    for (count = 0; count < timeoutCount; count++)
+    {
+        if (*addrVolatile == value)
+        {
+            return count;
+        }
+    }
 
-	return MAX_TIMEOUT_VALUE; // Timed out.
+    return MAX_TIMEOUT_VALUE; // Timed out.
 }
 
 // Returns the number of polling loops needed for ~1ms delay.
 unsigned long CalculateMsTimeoutLoopCount()
 {
 #ifdef __FAKEDOS__
-	// Can't calculate this outside of DOS.
-	// Fudge a number just so code will run.
-	return 1000;
+    // Can't calculate this outside of DOS.
+    // Fudge a number just so code will run.
+    return 1000;
 #else
-	unsigned char *biosTimerLsb;
-	unsigned char startValue;
-	unsigned long tickLoopCount;
+    unsigned char *biosTimerLsb;
+    unsigned char startValue;
+    unsigned long tickLoopCount;
 
-	biosTimerLsb = (unsigned char *)MK_FP(0x0040, 0x006C);
-	startValue = *biosTimerLsb;
+    biosTimerLsb = (unsigned char *)MK_FP(0x0040, 0x006C);
+    startValue = *biosTimerLsb;
 
-	// Wait for the timer to tick over once.
-	WaitForValue(biosTimerLsb, startValue + 1, MAX_TIMEOUT_VALUE);
+    // Wait for the timer to tick over once.
+    WaitForValue(biosTimerLsb, startValue + 1, MAX_TIMEOUT_VALUE);
 
-	// Now that it just ticked over, wait for the it to 
-	// tick over one more time.
-	tickLoopCount = 
-		WaitForValue(biosTimerLsb, startValue + 2, MAX_TIMEOUT_VALUE);
+    // Now that it just ticked over, wait for the it to 
+    // tick over one more time.
+    tickLoopCount = 
+        WaitForValue(biosTimerLsb, startValue + 2, MAX_TIMEOUT_VALUE);
 
-	// Tick is approximately 55ms, so scale accordingly.
-	return tickLoopCount / 55;
+    // Tick is approximately 55ms, so scale accordingly.
+    return tickLoopCount / 55;
 #endif
 }
 
 unsigned int CalculateSequenceSeg(unsigned int destSeg, long flashLen)
 {
-	const long sequenceWindowSize = 32L * 1024L;
-	long destAddr;
-	long seqAddr;
-	unsigned int seqSeg;
+    const long sequenceWindowSize = 32L * 1024L;
+    long destAddr;
+    long seqAddr;
+    unsigned int seqSeg;
 
-	destAddr = (long)destSeg << 4L;
-	seqAddr = destAddr & ~(sequenceWindowSize - 1L);
+    destAddr = (long)destSeg << 4L;
+    seqAddr = destAddr & ~(sequenceWindowSize - 1L);
 
-	if (seqAddr < destAddr && (seqAddr + sequenceWindowSize * 2L) <= destAddr + flashLen)
-	{
-		// Rounded down address was outside of flashing range. 
-		// However, rounding up does fit within the flashing range,
-		// so go ahead and round up.
-		seqAddr += sequenceWindowSize;
-	}
+    if (seqAddr < destAddr && (seqAddr + sequenceWindowSize * 2L) <= destAddr + flashLen)
+    {
+        // Rounded down address was outside of flashing range. 
+        // However, rounding up does fit within the flashing range,
+        // so go ahead and round up.
+        seqAddr += sequenceWindowSize;
+    }
 
-	seqSeg = seqAddr >> 4L;
+    seqSeg = seqAddr >> 4L;
 
-	return seqSeg;
+    return seqSeg;
 }
 
 bool IsBiosAtSeg(unsigned int seg)
 {
-	unsigned char *ptr = MK_FP(seg, 0);
+    unsigned char *ptr = MK_FP(seg, 0);
 
-	return ptr[0] == 0x55 || ptr[1] == 0xFF;
+    return ptr[0] == 0x55 || ptr[1] == 0xFF;
 }
 
 bool HaveOverlappingBioses(unsigned int sequenceSeg, unsigned int destSeg, unsigned long flashLen)
 {
-	unsigned int twoKInSeg = 2 * 1024 / 16;
-	unsigned int thirtyTwoKInSeg = 32 / 16 * 1024;
-	unsigned int flashLenInSeg = (unsigned int)(flashLen / 16L);
-	unsigned int endSeg = sequenceSeg + thirtyTwoKInSeg;
-	unsigned int curr;
+    unsigned int twoKInSeg = 2 * 1024 / 16;
+    unsigned int thirtyTwoKInSeg = 32 / 16 * 1024;
+    unsigned int flashLenInSeg = (unsigned int)(flashLen / 16L);
+    unsigned int endSeg = sequenceSeg + thirtyTwoKInSeg;
+    unsigned int curr;
 
-	for (curr = sequenceSeg; curr < endSeg; curr += twoKInSeg)
-	{
-		if (curr == destSeg)
-		{
-			// Skip the explicit range of the destination we will flash to.
-			curr += flashLenInSeg;
-			continue;
-		}
+    for (curr = sequenceSeg; curr < endSeg; curr += twoKInSeg)
+    {
+        if (curr == destSeg)
+        {
+            // Skip the explicit range of the destination we will flash to.
+            curr += flashLenInSeg;
+            continue;
+        }
 
-		if (IsBiosAtSeg(curr))
-		{
-			return TRUE;
-		}
-	}
+        if (IsBiosAtSeg(curr))
+        {
+            return TRUE;
+        }
+    }
 
-	return FALSE;
+    return FALSE;
 }
 
 // Returns TRUE on Y.
 bool GetYNConfirmation()
 {
-	int charInput;
+    int charInput;
 
-	do
-	{
-		charInput = tolower(getch());
-	} while (charInput != 'y' && charInput != 'n');
+    do
+    {
+        charInput = tolower(getch());
+    } while (charInput != 'y' && charInput != 'n');
 
-	PrintMessage("%c\n", charInput);
+    PrintMessage("%c\n", charInput);
 
-	return charInput == 'y';
+    return charInput == 'y';
 }
 
 void PrintSegAddress(unsigned int seqSeg, unsigned int destSeg)
 {
-	PrintMessage("%04X", destSeg);
+    PrintMessage("%04X", destSeg);
 
-	if (seqSeg != destSeg)
-	{
-		PrintMessage(" (sequence address % 04X)", seqSeg);
-	}
+    if (seqSeg != destSeg)
+    {
+        PrintMessage(" (sequence address % 04X)", seqSeg);
+    }
 }
 
 void EnableInterrupts()
 {
 #ifndef __FAKEDOS__
-	asm sti;
+    asm sti;
 #endif
 }
 
 void DisableInterrupts()
 {
 #ifndef __FAKEDOS__
-	asm cli;
+    asm cli;
 #endif
 }
 
 const char *DetectDeviceType(unsigned int seqSeg, unsigned int destSeg)
 {
-	volatile unsigned char *seqPtr = MK_FP(seqSeg, 0);
-	volatile unsigned char *destPtr = MK_FP(destSeg, 0);
-	unsigned char vendorId;
-	unsigned char deviceId;
+    volatile unsigned char *seqPtr = MK_FP(seqSeg, 0);
+    volatile unsigned char *destPtr = MK_FP(destSeg, 0);
+    unsigned char vendorId;
+    unsigned char deviceId;
 
-	DisableInterrupts();
+    DisableInterrupts();
 
-	// Enter software ID.
-	seqPtr[0x5555] = 0xAA;
-	seqPtr[0x2AAA] = 0x55;
-	seqPtr[0x5555] = 0x90;
+    // Enter software ID.
+    seqPtr[0x5555] = 0xAA;
+    seqPtr[0x2AAA] = 0x55;
+    seqPtr[0x5555] = 0x90;
 
-	vendorId = destPtr[0];
-	deviceId = destPtr[1];
+    vendorId = destPtr[0];
+    deviceId = destPtr[1];
 
-	// Exit software ID.
-	seqPtr[0x5555] = 0xF0;
+    // Exit software ID.
+    seqPtr[0x5555] = 0xF0;
 
-	EnableInterrupts();
+    EnableInterrupts();
 
-	if (vendorId == 0xBF)
-	{
-		switch (deviceId)
-		{
-		case 0xB4:
-			return "SST39SF512";
-		case 0xB5:
-			return "SST39SF010";
-		case 0xB6:
-			return "SST39SF020";
-		case 0xB7:
-			return "SST39SF040";
-		default:
-			break;
-		}
-	}
+    if (vendorId == 0xBF)
+    {
+        switch (deviceId)
+        {
+        case 0xB4:
+            return "SST39SF512";
+        case 0xB5:
+            return "SST39SF010";
+        case 0xB6:
+            return "SST39SF020";
+        case 0xB7:
+            return "SST39SF040";
+        default:
+            break;
+        }
+    }
 
-	return NULL;
+    return NULL;
 }
 
 bool EraseBlock(unsigned int seqSeg, unsigned char *dest, unsigned long timeoutLoopCount)
 {
-	volatile unsigned char *seqPtr = MK_FP(seqSeg, 0);
+    volatile unsigned char *seqPtr = MK_FP(seqSeg, 0);
 
-	seqPtr[0x5555] = 0xAA;
-	seqPtr[0x2AAA] = 0x55;
-	seqPtr[0x5555] = 0x80;
-	seqPtr[0x5555] = 0xAA;
-	seqPtr[0x2AAA] = 0x55;
-	dest[0] = 0x30;
+    seqPtr[0x5555] = 0xAA;
+    seqPtr[0x2AAA] = 0x55;
+    seqPtr[0x5555] = 0x80;
+    seqPtr[0x5555] = 0xAA;
+    seqPtr[0x2AAA] = 0x55;
+    dest[0] = 0x30;
 
-	return WaitForValue(dest, 0xFF, timeoutLoopCount) != MAX_TIMEOUT_VALUE;
+    return WaitForValue(dest, 0xFF, timeoutLoopCount) != MAX_TIMEOUT_VALUE;
 }
 
 bool ProgramBlock(unsigned int seqSeg, unsigned char *source, unsigned char *dest, unsigned long timeoutLoopCount)
 {
-	volatile unsigned char *seqPtr = MK_FP(seqSeg, 0);
-	int i;
+    volatile unsigned char *seqPtr = MK_FP(seqSeg, 0);
+    int i;
 
-	for (i = 0; i < FLASH_BLOCK_SIZE; i++)
-	{
-		seqPtr[0x5555] = 0xAA;
-		seqPtr[0x2AAA] = 0x55;
-		seqPtr[0x5555] = 0xA0;
+    for (i = 0; i < FLASH_BLOCK_SIZE; i++)
+    {
+        seqPtr[0x5555] = 0xAA;
+        seqPtr[0x2AAA] = 0x55;
+        seqPtr[0x5555] = 0xA0;
 
-		dest[i] = source[i];
+        dest[i] = source[i];
 
-		if (WaitForValue(dest + i, source[i], timeoutLoopCount) == MAX_TIMEOUT_VALUE)
-		{
-			return FALSE;
-		}
-	}
+        if (WaitForValue(dest + i, source[i], timeoutLoopCount) == MAX_TIMEOUT_VALUE)
+        {
+            return FALSE;
+        }
+    }
 
-	return TRUE;
+    return TRUE;
 }
 
 // Returns number of blocks flashed.
@@ -541,180 +541,180 @@ bool ProgramBlock(unsigned int seqSeg, unsigned char *source, unsigned char *des
 // -1 on error.
 int FlashRom(unsigned int seqSeg, unsigned int destSeg, const RomData* romData, unsigned long msTimeoutLoopCount)
 {
-	const int blockSizeInSeg = FLASH_BLOCK_SIZE >> 4;
-	const unsigned long sectorEraseTimeout = SECTOR_ERASE_TIMEOUT_MS * msTimeoutLoopCount;
-	const unsigned long byteWriteTimeout = BYTE_WRITE_TIMEOUT_MS * msTimeoutLoopCount;
-	unsigned char *destPtr;
-	int numBlocksFlashed = 0;
-	const char *errorString = NULL;
-	int blockIndex;
+    const int blockSizeInSeg = FLASH_BLOCK_SIZE >> 4;
+    const unsigned long sectorEraseTimeout = SECTOR_ERASE_TIMEOUT_MS * msTimeoutLoopCount;
+    const unsigned long byteWriteTimeout = BYTE_WRITE_TIMEOUT_MS * msTimeoutLoopCount;
+    unsigned char *destPtr;
+    int numBlocksFlashed = 0;
+    const char *errorString = NULL;
+    int blockIndex;
 
-	DisableInterrupts();
+    DisableInterrupts();
 
-	for (blockIndex = 0; blockIndex < romData->numRomBlocks; blockIndex++, destSeg += blockSizeInSeg)
-	{
-		destPtr = MK_FP(destSeg, 0);
+    for (blockIndex = 0; blockIndex < romData->numRomBlocks; blockIndex++, destSeg += blockSizeInSeg)
+    {
+        destPtr = MK_FP(destSeg, 0);
 
         if (memcmp(destPtr, romData->romBlocks[blockIndex], FLASH_BLOCK_SIZE) == 0)
-		{
-			continue;
-		}
+        {
+            continue;
+        }
 
-		if (!EraseBlock(seqSeg, destPtr, sectorEraseTimeout))
-		{
-			errorString = "Timeout erasing block.";
-			break;
-		}
+        if (!EraseBlock(seqSeg, destPtr, sectorEraseTimeout))
+        {
+            errorString = "Timeout erasing block.";
+            break;
+        }
 
-		if (!ProgramBlock(seqSeg, romData->romBlocks[blockIndex], destPtr, byteWriteTimeout))
-		{
-			errorString = "Timeout programming block.";
-			break;
-		}
+        if (!ProgramBlock(seqSeg, romData->romBlocks[blockIndex], destPtr, byteWriteTimeout))
+        {
+            errorString = "Timeout programming block.";
+            break;
+        }
 
-		numBlocksFlashed++;
-	}
+        numBlocksFlashed++;
+    }
 
-	EnableInterrupts();
+    EnableInterrupts();
 
-	if (errorString)
-	{
-		LogError(errorString);
-		return -1;
-	}
+    if (errorString)
+    {
+        LogError(errorString);
+        return -1;
+    }
 
-	return numBlocksFlashed;
+    return numBlocksFlashed;
 }
 
 bool VerifyRom(unsigned int destSeg, const RomData* romData)
 {
-	const int blockSizeInSeg = FLASH_BLOCK_SIZE >> 4;
-	unsigned char *destPtr;
-	int blockIndex;
+    const int blockSizeInSeg = FLASH_BLOCK_SIZE >> 4;
+    unsigned char *destPtr;
+    int blockIndex;
 
-	for (blockIndex = 0; blockIndex < romData->numRomBlocks; blockIndex++, destSeg += blockSizeInSeg)
-	{
-		destPtr = MK_FP(destSeg, 0);
+    for (blockIndex = 0; blockIndex < romData->numRomBlocks; blockIndex++, destSeg += blockSizeInSeg)
+    {
+        destPtr = MK_FP(destSeg, 0);
 
-		if (memcmp(destPtr, romData->romBlocks[blockIndex], FLASH_BLOCK_SIZE) != 0)
-		{
-			return FALSE;
-		}
-	}
+        if (memcmp(destPtr, romData->romBlocks[blockIndex], FLASH_BLOCK_SIZE) != 0)
+        {
+            return FALSE;
+        }
+    }
 
-	return TRUE;
+    return TRUE;
 }
 
 bool ProcessRom(const Options* options, const RomData* romData)
 {
-	unsigned long msTimeoutLoopCount;
-	unsigned int sequenceSeg;
-	const char *deviceName;
-	int numBlocksFlashed;
+    unsigned long msTimeoutLoopCount;
+    unsigned int sequenceSeg;
+    const char *deviceName;
+    int numBlocksFlashed;
 
-	//Calibrate timeout timer.
-	PrintMessage("Calibrating timeout timer...");
-	msTimeoutLoopCount =
-		CalculateMsTimeoutLoopCount();
-	PrintMessage(" %ld loops per ms\n", msTimeoutLoopCount);
+    //Calibrate timeout timer.
+    PrintMessage("Calibrating timeout timer...");
+    msTimeoutLoopCount =
+        CalculateMsTimeoutLoopCount();
+    PrintMessage(" %ld loops per ms\n", msTimeoutLoopCount);
 
-	// Find the segment address to use for the programming sequences.
-	sequenceSeg = CalculateSequenceSeg(options->destSeg, romData->romSize);
+    // Find the segment address to use for the programming sequences.
+    sequenceSeg = CalculateSequenceSeg(options->destSeg, romData->romSize);
 
-	// Detect the flash ROM device.
-	deviceName = DetectDeviceType(sequenceSeg, options->destSeg);
-	if (!deviceName)
-	{
-		PrintMessage("Unable to detect SST39SF0x0 flash ROM at address ");
-		PrintSegAddress(sequenceSeg, options->destSeg);
-		PrintMessage(".\n");
-		return FALSE;
-	}
+    // Detect the flash ROM device.
+    deviceName = DetectDeviceType(sequenceSeg, options->destSeg);
+    if (!deviceName)
+    {
+        PrintMessage("Unable to detect SST39SF0x0 flash ROM at address ");
+        PrintSegAddress(sequenceSeg, options->destSeg);
+        PrintMessage(".\n");
+        return FALSE;
+    }
 
-	// Display a warning if there is another BIOS we might be able to overwrite.
-	if (HaveOverlappingBioses(sequenceSeg, options->destSeg, romData->romSize))
-	{
-		PrintMessage("\n"
+    // Display a warning if there is another BIOS we might be able to overwrite.
+    if (HaveOverlappingBioses(sequenceSeg, options->destSeg, romData->romSize))
+    {
+        PrintMessage("\n"
                      "*** WARNING: Another ROM image was found in the 32K programming range ***\n"
                      "*** starting at %04X. If there is a second SST Flash ROM in this      ***\n"
                      "*** range, it's data may be become corrupted after programming.       ***\n",
-			         sequenceSeg);
-	}
+                     sequenceSeg);
+    }
 
-	// Print details on what we are about to do.
-	PrintMessage("\n"
-		         "Will program %dK to %s at address ",
-		         (unsigned int)(romData->romSize / 1024L),
-		         deviceName);
-	PrintSegAddress(sequenceSeg, options->destSeg);
-	PrintMessage(".\n");
+    // Print details on what we are about to do.
+    PrintMessage("\n"
+                 "Will program %dK to %s at address ",
+                 (unsigned int)(romData->romSize / 1024L),
+                 deviceName);
+    PrintSegAddress(sequenceSeg, options->destSeg);
+    PrintMessage(".\n");
 
-	// Check that user wants to continue.
-	PrintMessage("Continue Y/N? ");
-	if (!GetYNConfirmation())
-	{
-		PrintMessage("Exiting.\n");
-		return FALSE;
-	}
+    // Check that user wants to continue.
+    PrintMessage("Continue Y/N? ");
+    if (!GetYNConfirmation())
+    {
+        PrintMessage("Exiting.\n");
+        return FALSE;
+    }
 
-	PrintMessage("Programming...");
+    PrintMessage("Programming...");
 
-	numBlocksFlashed = FlashRom(sequenceSeg, options->destSeg, romData, msTimeoutLoopCount);
-	if (numBlocksFlashed == 0)
-	{
-		PrintMessage("\nFlash ROM already up to date. No programming done.\n");
-		return TRUE;
-	}
+    numBlocksFlashed = FlashRom(sequenceSeg, options->destSeg, romData, msTimeoutLoopCount);
+    if (numBlocksFlashed == 0)
+    {
+        PrintMessage("\nFlash ROM already up to date. No programming done.\n");
+        return TRUE;
+    }
 
-	if (numBlocksFlashed < 0)
-	{
-		PrintMessage("\nError during programming. The flash ROM might now have corrupt data.\n"
-			         "Please reboot your computer.");
-	}
-	else if (VerifyRom(options->destSeg, romData))
-	{
-		PrintMessage("\nProgramming complete! Please reboot your computer.");
-	}
-	else
-	{
-		PrintMessage("\nVerify failed! The flash ROM does not have correct data.\n"
-				        "Please reboot your computer.");
-	}
+    if (numBlocksFlashed < 0)
+    {
+        PrintMessage("\nError during programming. The flash ROM might now have corrupt data.\n"
+                     "Please reboot your computer.");
+    }
+    else if (VerifyRom(options->destSeg, romData))
+    {
+        PrintMessage("\nProgramming complete! Please reboot your computer.");
+    }
+    else
+    {
+        PrintMessage("\nVerify failed! The flash ROM does not have correct data.\n"
+                        "Please reboot your computer.");
+    }
 
-	// Since the BIOS has just been flashed, the previous version still
-	// running is unlikely to continue to function properly. The only 
-	// practical option is to have the user reboot the computer.
-	while (1) {} 
+    // Since the BIOS has just been flashed, the previous version still
+    // running is unlikely to continue to function properly. The only 
+    // practical option is to have the user reboot the computer.
+    while (1) {} 
 }
 
 int main(int argc, char **argv)
 {
-	Options options;
-	RomData romData;
-	bool flashResult;
+    Options options;
+    RomData romData;
+    bool flashResult;
 
-	PrintMessage(PRODUCT_STRING);
+    PrintMessage(PRODUCT_STRING);
 
-	if (!CheckMemoryModel())
-	{
-		return 1;
-	}
+    if (!CheckMemoryModel())
+    {
+        return 1;
+    }
 
-	if (!ParseCmdLine(argc, argv, &options))
-	{
-		PrintMessage(USAGE_STRING);
-		return 1;
-	}
+    if (!ParseCmdLine(argc, argv, &options))
+    {
+        PrintMessage(USAGE_STRING);
+        return 1;
+    }
 
-	if (!LoadRomDataFromFile(&options, &romData))
-	{
-		FreeRomData(&romData);
-		return 1;
-	}
+    if (!LoadRomDataFromFile(&options, &romData))
+    {
+        FreeRomData(&romData);
+        return 1;
+    }
 
-	flashResult = ProcessRom(&options, &romData);
+    flashResult = ProcessRom(&options, &romData);
 
-	FreeRomData(&romData);
-	
-	return flashResult ? 0 : 1;
+    FreeRomData(&romData);
+    
+    return flashResult ? 0 : 1;
 }
