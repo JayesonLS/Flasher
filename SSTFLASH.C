@@ -1,4 +1,4 @@
-// Flasher - Programs SST39SF0x0 Flash ROMs
+// SSTFLASH - Programs SST39SF0x0 Flash ROMs
 //
 // Copyright (C) 2021 Titanium Studios Pty Ltd 
 // 
@@ -47,14 +47,14 @@
 #define MAX_TIMEOUT_VALUE 0xFFFFFFFF
 
 static const char *PRODUCT_STRING =
-	"Flasher Version 0.9b1 - Programs SST39SF0x0 Flash ROMs\n"
+	"SSTFLASH Version 0.9b1 - Programs SST39SF0x0 Flash ROMs\n"
 	"Copyright (C) 2021 Titanium Studios Pty Ltd\n"
 	"\n";
 
 static const char *USAGE_STRING =
 	"\n"
-	"Usage: FLASHER <memory address> <ROM image file>\n"
-	" e.g.: FLASHER C800 ABIOS.BIN\n";
+	"Usage: SSTFLASH <memory address> <ROM image file>\n"
+	" e.g.: SSTFLASH C800 ABIOS.BIN\n";
 
 typedef int bool;
 
