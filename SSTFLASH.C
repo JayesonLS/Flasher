@@ -53,8 +53,16 @@ static const char *PRODUCT_STRING =
 
 static const char *USAGE_STRING =
 	"\n"
-	"Usage: SSTFLASH <memory address> <ROM image file>\n"
-	" e.g.: SSTFLASH C800 ABIOS.BIN\n";
+	"Usage: SSTFLASH [options] <memory address> <ROM image file>\n"
+    "\n"
+	"Examples:\n"
+	"    SSTFLASH C800 ABIOS.BIN\n"
+	"    SSTFLASH -size 32 D000 BBIOS.BIN\n"
+	"\n"
+	"Options:\n"
+	"-size <size in K>: Override amount of flash memory written.\n"
+	"                   Default is size of file. May be larger or\n"
+    "                   smaller than file size.\n";
 
 typedef int bool;
 
@@ -62,6 +70,7 @@ typedef struct _Options
 {
 	unsigned int destSeg;
 	const char *romImgPath;
+	int sizeOverrideK;
 } Options;
 
 typedef struct _RomData
@@ -135,17 +144,38 @@ bool ParseCmdLine(int argc, char **argv, Options* optionsOut)
 		const char *arg = argv[i];
 		const char *nextArg = (i + 1 < argc) ? argv[i + 1] : NULL;
 
-		if (arg[0] == '-' && 
+		if ((arg[0] == '-' || arg[0] == '/') &&
 			!optionsOut->destSeg && 
 			!optionsOut->romImgPath)
 		{
-			(void)nextArg; // Variable is for if we add complex options.
+			const char *opt = arg + 1;
+
 			// Parse option.
-			// if (stricmp(arg, "-option_name") == 0)
-			// {
-			// 	// set somethign here.
-			// }
-			// else
+			if (stricmp(opt, "?") == 0 || stricmp(opt, "h") == 0 || stricmp(opt, "help") == 0)
+			{
+				return FALSE; // Returning an error will result in the usage being displayed.
+			}
+			if (stricmp(opt, "size") == 0)
+			{
+				if (!nextArg)
+				{
+					LogError("Size option missing size override value.");
+					return FALSE;
+				}
+
+				optionsOut->sizeOverrideK = atoi(nextArg);
+
+				if (optionsOut->sizeOverrideK <= 0 || 
+					optionsOut->sizeOverrideK > MAX_ROM_SIZE_K ||
+					optionsOut->sizeOverrideK %2 != 0)
+				{
+					LogError("Size override must be a multiple of 2 and %d and a multiple of 2.", MAX_ROM_SIZE_K);
+					return FALSE;
+				}
+				
+				i++; // Skip past nextArg.
+			}
+			else
 			{
 				LogError("Invalid option '%s'", arg);
 				return FALSE;
@@ -188,22 +218,30 @@ bool ParseCmdLine(int argc, char **argv, Options* optionsOut)
 	return optionsOut->destSeg && optionsOut->romImgPath;
 }
 
-bool LoadRomDataFromFile(const char *path, RomData *romDataOut)
+bool LoadRomDataFromFile(const Options *options, RomData *romDataOut)
 {
 	FILE *f;
+	long sizeRemaining;
 
 	memset(romDataOut, 0, sizeof(RomData));
 
-	f = fopen(path, "rb");
+	f = fopen(options->romImgPath, "rb");
 	if (!f)
 	{
-		LogError("Unable to open file '%s'", path);
+		LogError("Unable to open file '%s'", options->romImgPath);
 		return FALSE;
 	}
 
-	while (!feof(f))
+	sizeRemaining = (long)MAX_ROM_BLOCK_COUNT * (long)FLASH_BLOCK_SIZE;
+	if (options->sizeOverrideK > 0)
+	{
+		sizeRemaining = (long)(options->sizeOverrideK) * 1024l;
+	}
+
+	while (!feof(f) && sizeRemaining > 0)
 	{
 		unsigned char *buffer;
+		unsigned int readSize;
 
 		if (romDataOut->numRomBlocks >= MAX_ROM_BLOCK_COUNT)
 		{
@@ -217,12 +255,27 @@ bool LoadRomDataFromFile(const char *path, RomData *romDataOut)
 		buffer = (unsigned char *)malloc(FLASH_BLOCK_SIZE);
 		memset(buffer, 0, FLASH_BLOCK_SIZE);
 		romDataOut->romBlocks[romDataOut->numRomBlocks] = buffer;
-		romDataOut->origRomSize += (int)fread(buffer, 1, FLASH_BLOCK_SIZE, f);
-		romDataOut->romSize += FLASH_BLOCK_SIZE;
+		readSize = sizeRemaining < (long)FLASH_BLOCK_SIZE ? (unsigned int)sizeRemaining : FLASH_BLOCK_SIZE;
+		sizeRemaining -= readSize;
+		romDataOut->origRomSize += (int)fread(buffer, 1, readSize, f);
 		romDataOut->numRomBlocks++;
 	}
 
 	fclose(f);
+
+	// Add 4K blocks if there is remaining size.
+	if (options->sizeOverrideK > 0)
+	{
+		while (sizeRemaining > 0)
+		{
+			unsigned char *buffer = (unsigned char *)malloc(FLASH_BLOCK_SIZE);
+			memset(buffer, 0, FLASH_BLOCK_SIZE);
+			romDataOut->romBlocks[romDataOut->numRomBlocks++] = buffer;
+			sizeRemaining -= FLASH_BLOCK_SIZE;
+		}
+	}
+
+	romDataOut->romSize = (unsigned long)romDataOut->numRomBlocks * (unsigned long)FLASH_BLOCK_SIZE;
 
 	if (!romDataOut->origRomSize)
 	{
@@ -230,18 +283,18 @@ bool LoadRomDataFromFile(const char *path, RomData *romDataOut)
 		return FALSE;
 	}
 
-	if (romDataOut->origRomSize % ROM_BLOCK_SIZE_)
+	if (romDataOut->origRomSize % ROM_BLOCK_SIZE__K)
 	{
 		LogError("ROM image file must be a multiple of %dK.",
 			ROM_BLOCK_SIZE__K);
 		return FALSE;
 	}
 
-	if (romDataOut->origRomSize % FLASH_BLOCK_SIZE)
+	if (romDataOut->origRomSize < romDataOut->romSize)
 	{
-		PrintMessage("%dK ROM image will be rounded up to a multiple of %dK.\n",
+		PrintMessage("%dK image will be rounded up to %dK (4K multiple) with zeros.\n",
 			         (int)(romDataOut->origRomSize / 1024L),
-			         FLASH_BLOCK_SIZE_K);
+			         (int)(romDataOut->romSize / 1024L));
 	}
 
 	return TRUE;
@@ -653,7 +706,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	if (!LoadRomDataFromFile(options.romImgPath, &romData))
+	if (!LoadRomDataFromFile(&options, &romData))
 	{
 		FreeRomData(&romData);
 		return 1;
