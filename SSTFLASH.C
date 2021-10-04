@@ -41,11 +41,6 @@
 #define FLASH_BLOCK_SIZE (FLASH_BLOCK_SIZE_K * 1024)
 #define MAX_ROM_BLOCK_COUNT (MAX_ROM_SIZE_K / FLASH_BLOCK_SIZE_K)
 
-#define BYTE_WRITE_TIMEOUT_MS 1ul // Data sheet says only 14us.
-#define SECTOR_ERASE_TIMEOUT_MS 250ul // 10x data sheet max time.
-#define CHIP_ERASE_TIMEOUT_MS 1000ul // 10x data sheet max time.
-#define MAX_TIMEOUT_VALUE 0xFFFFFFFF
-
 static const char *PRODUCT_STRING =
     "SSTFLASH Version 0.9b1 - Programs SST39SF0x0 Flash ROMs\n"
     "Copyright (C) 2021 Titanium Studios Pty Ltd\n"
@@ -316,50 +311,68 @@ void FreeRomData(RomData *romData)
 }
 
 // Waits for the value to be found at *addr. Loop timeout count is provided.
-// Returns actual number of loops waited.
-unsigned long WaitForValue(unsigned char *addr, unsigned char value, unsigned long timeoutCount)
+// Returns TRUE if expected value is read, FALSE in timeout.
+bool WaitForValue(unsigned char *addr, unsigned char value, unsigned int timeoutCount)
 {
-    unsigned long count;
     volatile unsigned char *addrVolatile;
 
-    addrVolatile = addr;
+	addrVolatile = addr;
 
-    for (count = 0; count < timeoutCount; count++)
-    {
-        if (*addrVolatile == value)
-        {
-            return count;
-        }
-    }
+	do
+	{
+		if (*addrVolatile == value)
+		{
+			return TRUE;
+		}
 
-    return MAX_TIMEOUT_VALUE; // Timed out.
+	} while (--timeoutCount);
+
+	return FALSE;
 }
 
-// Returns the number of polling loops needed for ~1ms delay.
-unsigned long CalculateMsTimeoutLoopCount()
+// Returns the number of polling loops needed for ~215us delay.
+// Implementation: we see how many times we can implement a 256-count
+// polling loop in one BIOS timer tick. Timer tick is ~18.6ms. Dividing
+// by 256 ~= 215us.
+unsigned int CalculateTimeoutLoopCount(unsigned long destSeg)
 {
 #ifdef __FAKEDOS__
     // Can't calculate this outside of DOS.
     // Fudge a number just so code will run.
     return 1000;
 #else
-    unsigned char *biosTimerLsb;
-    unsigned char startValue;
-    unsigned long tickLoopCount;
+	volatile unsigned char *biosTimerLsb = MK_FP(0x0040, 0x006C);
+	unsigned char *destPtr = MK_FP(destSeg, 0x0000);
+	unsigned char tickValue;
+    unsigned int tickLoopCount;
+	unsigned char expectedValue;
 
-    biosTimerLsb = (unsigned char *)MK_FP(0x0040, 0x006C);
-    startValue = *biosTimerLsb;
+	// Wait for BIOS timer to tick over once.
+	tickValue = *biosTimerLsb;
+	while (*biosTimerLsb == tickValue)
+	{
+	}
 
-    // Wait for the timer to tick over once.
-    WaitForValue(biosTimerLsb, startValue + 1, MAX_TIMEOUT_VALUE);
+	// Wait for BIOS timer to tick over once more,
+	// counting how many test loops we can do.
+	tickValue = *biosTimerLsb;
+	expectedValue  = ~(destPtr[0]);
 
-    // Now that it just ticked over, wait for the it to 
-    // tick over one more time.
-    tickLoopCount = 
-        WaitForValue(biosTimerLsb, startValue + 2, MAX_TIMEOUT_VALUE);
+	// Overflow should not be possible, however we handle it
+	// anyway. Reads from the SST device are over a slow bus, and even
+	// reading at the min read cycle time on the fastest version of the
+	// device, it would not be possible to overflow.
+	for (tickLoopCount = 0; 
+		 tickLoopCount < 0xFFFF && *biosTimerLsb == tickValue;
+		 tickLoopCount++)
+	{
+		// We must read from the flashing destination to get correct
+		// read timing. We are passing in a value that will never be 
+		// matched, therefore the polling loop will run to timeout.
+		WaitForValue(destPtr, expectedValue, 256);
+	} while (*biosTimerLsb == tickValue);
 
-    // Tick is approximately 55ms, so scale accordingly.
-    return tickLoopCount / 55;
+	return tickLoopCount;
 #endif
 }
 
@@ -472,6 +485,10 @@ const char *DetectDeviceType(unsigned int seqSeg, unsigned int destSeg)
     seqPtr[0x2AAA] = 0x55;
     seqPtr[0x5555] = 0x90;
 
+	vendorId = destPtr[0]; // Extra reads to give device time to respond. 
+	vendorId = destPtr[0];
+	vendorId = destPtr[0];
+
     vendorId = destPtr[0];
     deviceId = destPtr[1];
 
@@ -500,9 +517,10 @@ const char *DetectDeviceType(unsigned int seqSeg, unsigned int destSeg)
     return NULL;
 }
 
-bool EraseBlock(unsigned int seqSeg, unsigned char *dest, unsigned long timeoutLoopCount)
+bool EraseBlock(unsigned int seqSeg, unsigned char *dest, unsigned int timeoutLoopCount)
 {
     volatile unsigned char *seqPtr = MK_FP(seqSeg, 0);
+	int timeoutOuterLoopCount;
 
     seqPtr[0x5555] = 0xAA;
     seqPtr[0x2AAA] = 0x55;
@@ -511,10 +529,19 @@ bool EraseBlock(unsigned int seqSeg, unsigned char *dest, unsigned long timeoutL
     seqPtr[0x2AAA] = 0x55;
     dest[0] = 0x30;
 
-    return WaitForValue(dest, 0xFF, timeoutLoopCount) != MAX_TIMEOUT_VALUE;
+	// 1163 loops x ~215us = 250ms = 10x datasheet max.
+	for (timeoutOuterLoopCount = 1163; timeoutOuterLoopCount; --timeoutOuterLoopCount)
+	{
+		if (WaitForValue(dest, 0xFF, timeoutLoopCount))
+		{
+			return TRUE;
+		}
+	}
+
+    return FALSE;
 }
 
-bool ProgramBlock(unsigned int seqSeg, unsigned char *source, unsigned char *dest, unsigned long timeoutLoopCount)
+bool ProgramBlock(unsigned int seqSeg, unsigned char *source, unsigned char *dest, unsigned int timeoutLoopCount)
 {
     volatile unsigned char *seqPtr = MK_FP(seqSeg, 0);
     int i;
@@ -527,7 +554,9 @@ bool ProgramBlock(unsigned int seqSeg, unsigned char *source, unsigned char *des
 
         dest[i] = source[i];
 
-        if (WaitForValue(dest + i, source[i], timeoutLoopCount) == MAX_TIMEOUT_VALUE)
+		// Device won't return actual data until write complete.
+		// Timeout ~215us, or ~10x 20us max program time from datasheet.
+        if (!WaitForValue(dest + i, source[i], timeoutLoopCount))
         {
             return FALSE;
         }
@@ -539,11 +568,9 @@ bool ProgramBlock(unsigned int seqSeg, unsigned char *source, unsigned char *des
 // Returns number of blocks flashed.
 // 0 if none flashed.
 // -1 on error.
-int FlashRom(unsigned int seqSeg, unsigned int destSeg, const RomData* romData, unsigned long msTimeoutLoopCount)
+int FlashRom(unsigned int seqSeg, unsigned int destSeg, const RomData* romData, unsigned int timeoutLoopCount)
 {
     const int blockSizeInSeg = FLASH_BLOCK_SIZE >> 4;
-    const unsigned long sectorEraseTimeout = SECTOR_ERASE_TIMEOUT_MS * msTimeoutLoopCount;
-    const unsigned long byteWriteTimeout = BYTE_WRITE_TIMEOUT_MS * msTimeoutLoopCount;
     unsigned char *destPtr;
     int numBlocksFlashed = 0;
     const char *errorString = NULL;
@@ -560,13 +587,13 @@ int FlashRom(unsigned int seqSeg, unsigned int destSeg, const RomData* romData, 
             continue;
         }
 
-        if (!EraseBlock(seqSeg, destPtr, sectorEraseTimeout))
+        if (!EraseBlock(seqSeg, destPtr, timeoutLoopCount))
         {
             errorString = "Timeout erasing block.";
             break;
         }
 
-        if (!ProgramBlock(seqSeg, romData->romBlocks[blockIndex], destPtr, byteWriteTimeout))
+        if (!ProgramBlock(seqSeg, romData->romBlocks[blockIndex], destPtr, timeoutLoopCount))
         {
             errorString = "Timeout programming block.";
             break;
@@ -607,16 +634,16 @@ bool VerifyRom(unsigned int destSeg, const RomData* romData)
 
 bool ProcessRom(const Options* options, const RomData* romData)
 {
-    unsigned long msTimeoutLoopCount;
+    unsigned int timeoutLoopCount;
     unsigned int sequenceSeg;
     const char *deviceName;
     int numBlocksFlashed;
 
     //Calibrate timeout timer.
     PrintMessage("Calibrating timeout timer...");
-    msTimeoutLoopCount =
-        CalculateMsTimeoutLoopCount();
-    PrintMessage(" %ld loops per ms\n", msTimeoutLoopCount);
+    timeoutLoopCount =
+        CalculateTimeoutLoopCount(options->destSeg);
+    PrintMessage(" %d loops per ms\n", timeoutLoopCount);
 
     // Find the segment address to use for the programming sequences.
     sequenceSeg = CalculateSequenceSeg(options->destSeg, romData->romSize);
@@ -659,7 +686,7 @@ bool ProcessRom(const Options* options, const RomData* romData)
 
     PrintMessage("Programming...");
 
-    numBlocksFlashed = FlashRom(sequenceSeg, options->destSeg, romData, msTimeoutLoopCount);
+    numBlocksFlashed = FlashRom(sequenceSeg, options->destSeg, romData, timeoutLoopCount);
     if (numBlocksFlashed == 0)
     {
         PrintMessage("\nFlash ROM already up to date. No programming done.\n");
