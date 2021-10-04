@@ -42,7 +42,7 @@
 #define MAX_ROM_BLOCK_COUNT (MAX_ROM_SIZE_K / FLASH_BLOCK_SIZE_K)
 
 static const char *PRODUCT_STRING =
-    "SSTFLASH Version 0.9b1 - Programs SST39SF0x0 Flash ROMs\n"
+    "SSTFLASH Version 0.9b2 - Programs SST39SF0x0 Flash ROMs\n"
     "Copyright (C) 2021 Titanium Studios Pty Ltd\n"
     "\n";
 
@@ -59,19 +59,19 @@ static const char *USAGE_STRING =
     "                   Default is size of file. May be larger or\n"
     "                   smaller than file size.\n";
 
-typedef int bool;
+typedef short bool;
 
 typedef struct _Options
 {
-    unsigned int destSeg;
+    unsigned short destSeg;
     const char *romImgPath;
-    int sizeOverrideK;
+    short sizeOverrideK;
 } Options;
 
 typedef struct _RomData
 {
     unsigned char *romBlocks[MAX_ROM_BLOCK_COUNT];
-    int numRomBlocks;
+    short numRomBlocks;
     unsigned long romSize;
     unsigned long origRomSize;
 } RomData;
@@ -128,9 +128,9 @@ bool CheckMemoryModel()
     return TRUE;
 }
 
-bool ParseCmdLine(int argc, char **argv, Options* optionsOut)
+bool ParseCmdLine(short argc, char **argv, Options* optionsOut)
 {
-    int i;
+    short i;
 
     memset(optionsOut, 0, sizeof(Options));
 
@@ -179,9 +179,9 @@ bool ParseCmdLine(int argc, char **argv, Options* optionsOut)
         else if (optionsOut->destSeg == 0)
         {
             // Parse address.
-            unsigned int destSeg = (unsigned int)strtol(arg, NULL, 16);
+            unsigned short destSeg = (unsigned short)strtol(arg, NULL, 16);
 
-            static const int BLOCK_SIZE =
+            static const short BLOCK_SIZE =
                 FLASH_BLOCK_SIZE > ROM_BLOCK_SIZE_ ?
                 FLASH_BLOCK_SIZE : ROM_BLOCK_SIZE_;
 
@@ -236,7 +236,7 @@ bool LoadRomDataFromFile(const Options *options, RomData *romDataOut)
     while (!feof(f) && sizeRemaining > 0)
     {
         unsigned char *buffer;
-        unsigned int readSize;
+        unsigned short readSize;
 
         if (romDataOut->numRomBlocks >= MAX_ROM_BLOCK_COUNT)
         {
@@ -250,9 +250,9 @@ bool LoadRomDataFromFile(const Options *options, RomData *romDataOut)
         buffer = (unsigned char *)malloc(FLASH_BLOCK_SIZE);
         memset(buffer, 0, FLASH_BLOCK_SIZE);
         romDataOut->romBlocks[romDataOut->numRomBlocks] = buffer;
-        readSize = sizeRemaining < (long)FLASH_BLOCK_SIZE ? (unsigned int)sizeRemaining : FLASH_BLOCK_SIZE;
+        readSize = sizeRemaining < (long)FLASH_BLOCK_SIZE ? (unsigned short)sizeRemaining : FLASH_BLOCK_SIZE;
         sizeRemaining -= readSize;
-        romDataOut->origRomSize += (int)fread(buffer, 1, readSize, f);
+        romDataOut->origRomSize += (short)fread(buffer, 1, readSize, f);
         romDataOut->numRomBlocks++;
     }
 
@@ -288,8 +288,8 @@ bool LoadRomDataFromFile(const Options *options, RomData *romDataOut)
     if (romDataOut->origRomSize < romDataOut->romSize)
     {
         PrintMessage("%dK image will be rounded up to %dK (4K multiple) with zeros.\n",
-                     (int)(romDataOut->origRomSize / 1024L),
-                     (int)(romDataOut->romSize / 1024L));
+                     (short)(romDataOut->origRomSize / 1024L),
+                     (short)(romDataOut->romSize / 1024L));
     }
 
     return TRUE;
@@ -297,7 +297,7 @@ bool LoadRomDataFromFile(const Options *options, RomData *romDataOut)
 
 void FreeRomData(RomData *romData)
 {
-    int i;
+    short i;
 
     for (i = 0; i < MAX_ROM_BLOCK_COUNT; i++)
     {
@@ -312,7 +312,7 @@ void FreeRomData(RomData *romData)
 
 // Waits for the value to be found at *addr. Loop timeout count is provided.
 // Returns TRUE if expected value is read, FALSE in timeout.
-bool WaitForValue(unsigned char *addr, unsigned char value, unsigned int timeoutCount)
+bool WaitForValue(unsigned char *addr, unsigned char value, unsigned short timeoutCount)
 {
     volatile unsigned char *addrVolatile;
 
@@ -334,7 +334,7 @@ bool WaitForValue(unsigned char *addr, unsigned char value, unsigned int timeout
 // Implementation: we see how many times we can implement a 256-count
 // polling loop in one BIOS timer tick. Timer tick is ~18.6ms. Dividing
 // by 256 ~= 215us.
-unsigned int CalculateTimeoutLoopCount(unsigned long destSeg)
+unsigned short CalculateTimeoutLoopCount(unsigned long destSeg)
 {
 #ifdef __FAKEDOS__
     // Can't calculate this outside of DOS.
@@ -344,7 +344,7 @@ unsigned int CalculateTimeoutLoopCount(unsigned long destSeg)
 	volatile unsigned char *biosTimerLsb = MK_FP(0x0040, 0x006C);
 	unsigned char *destPtr = MK_FP(destSeg, 0x0000);
 	unsigned char tickValue;
-    unsigned int tickLoopCount;
+    unsigned short tickLoopCount;
 	unsigned char expectedValue;
 
 	// Wait for BIOS timer to tick over once.
@@ -376,12 +376,12 @@ unsigned int CalculateTimeoutLoopCount(unsigned long destSeg)
 #endif
 }
 
-unsigned int CalculateSequenceSeg(unsigned int destSeg, long flashLen)
+unsigned short CalculateSequenceSeg(unsigned short destSeg, long flashLen)
 {
     const long sequenceWindowSize = 32L * 1024L;
     long destAddr;
     long seqAddr;
-    unsigned int seqSeg;
+    unsigned short seqSeg;
 
     destAddr = (long)destSeg << 4L;
     seqAddr = destAddr & ~(sequenceWindowSize - 1L);
@@ -394,25 +394,25 @@ unsigned int CalculateSequenceSeg(unsigned int destSeg, long flashLen)
         seqAddr += sequenceWindowSize;
     }
 
-    seqSeg = seqAddr >> 4L;
+    seqSeg = (short)(seqAddr >> 4L);
 
     return seqSeg;
 }
 
-bool IsBiosAtSeg(unsigned int seg)
+bool IsBiosAtSeg(unsigned short seg)
 {
     unsigned char *ptr = MK_FP(seg, 0);
 
     return ptr[0] == 0x55 || ptr[1] == 0xFF;
 }
 
-bool HaveOverlappingBioses(unsigned int sequenceSeg, unsigned int destSeg, unsigned long flashLen)
+bool HaveOverlappingBioses(unsigned short sequenceSeg, unsigned short destSeg, unsigned long flashLen)
 {
-    unsigned int twoKInSeg = 2 * 1024 / 16;
-    unsigned int thirtyTwoKInSeg = 32 / 16 * 1024;
-    unsigned int flashLenInSeg = (unsigned int)(flashLen / 16L);
-    unsigned int endSeg = sequenceSeg + thirtyTwoKInSeg;
-    unsigned int curr;
+    unsigned short twoKInSeg = 2 * 1024 / 16;
+    unsigned short thirtyTwoKInSeg = 32 / 16 * 1024;
+    unsigned short flashLenInSeg = (unsigned short)(flashLen / 16L);
+    unsigned short endSeg = sequenceSeg + thirtyTwoKInSeg;
+    unsigned short curr;
 
     for (curr = sequenceSeg; curr < endSeg; curr += twoKInSeg)
     {
@@ -435,7 +435,7 @@ bool HaveOverlappingBioses(unsigned int sequenceSeg, unsigned int destSeg, unsig
 // Returns TRUE on Y.
 bool GetYNConfirmation()
 {
-    int charInput;
+    short charInput;
 
     do
     {
@@ -447,7 +447,7 @@ bool GetYNConfirmation()
     return charInput == 'y';
 }
 
-void PrintSegAddress(unsigned int seqSeg, unsigned int destSeg)
+void PrintSegAddress(unsigned short seqSeg, unsigned short destSeg)
 {
     PrintMessage("%04X", destSeg);
 
@@ -471,7 +471,7 @@ void DisableInterrupts()
 #endif
 }
 
-const char *DetectDeviceType(unsigned int seqSeg, unsigned int destSeg)
+const char *DetectDeviceType(unsigned short seqSeg, unsigned short destSeg)
 {
     volatile unsigned char *seqPtr = MK_FP(seqSeg, 0);
     volatile unsigned char *destPtr = MK_FP(destSeg, 0);
@@ -517,10 +517,10 @@ const char *DetectDeviceType(unsigned int seqSeg, unsigned int destSeg)
     return NULL;
 }
 
-bool EraseBlock(unsigned int seqSeg, unsigned char *dest, unsigned int timeoutLoopCount)
+bool EraseBlock(unsigned short seqSeg, unsigned char *dest, unsigned short timeoutLoopCount)
 {
     volatile unsigned char *seqPtr = MK_FP(seqSeg, 0);
-	int timeoutOuterLoopCount;
+	short timeoutOuterLoopCount;
 
     seqPtr[0x5555] = 0xAA;
     seqPtr[0x2AAA] = 0x55;
@@ -541,10 +541,10 @@ bool EraseBlock(unsigned int seqSeg, unsigned char *dest, unsigned int timeoutLo
     return FALSE;
 }
 
-bool ProgramBlock(unsigned int seqSeg, unsigned char *source, unsigned char *dest, unsigned int timeoutLoopCount)
+bool ProgramBlock(unsigned short seqSeg, unsigned char *source, unsigned char *dest, unsigned short timeoutLoopCount)
 {
     volatile unsigned char *seqPtr = MK_FP(seqSeg, 0);
-    int i;
+    short i;
 
     for (i = 0; i < FLASH_BLOCK_SIZE; i++)
     {
@@ -568,13 +568,13 @@ bool ProgramBlock(unsigned int seqSeg, unsigned char *source, unsigned char *des
 // Returns number of blocks flashed.
 // 0 if none flashed.
 // -1 on error.
-int FlashRom(unsigned int seqSeg, unsigned int destSeg, const RomData* romData, unsigned int timeoutLoopCount)
+short FlashRom(unsigned short seqSeg, unsigned short destSeg, const RomData* romData, unsigned short timeoutLoopCount)
 {
-    const int blockSizeInSeg = FLASH_BLOCK_SIZE >> 4;
+    const short blockSizeInSeg = FLASH_BLOCK_SIZE >> 4;
     unsigned char *destPtr;
-    int numBlocksFlashed = 0;
+    short numBlocksFlashed = 0;
     const char *errorString = NULL;
-    int blockIndex;
+    short blockIndex;
 
     DisableInterrupts();
 
@@ -613,11 +613,11 @@ int FlashRom(unsigned int seqSeg, unsigned int destSeg, const RomData* romData, 
     return numBlocksFlashed;
 }
 
-bool VerifyRom(unsigned int destSeg, const RomData* romData)
+bool VerifyRom(unsigned short destSeg, const RomData* romData)
 {
-    const int blockSizeInSeg = FLASH_BLOCK_SIZE >> 4;
+    const short blockSizeInSeg = FLASH_BLOCK_SIZE >> 4;
     unsigned char *destPtr;
-    int blockIndex;
+    short blockIndex;
 
     for (blockIndex = 0; blockIndex < romData->numRomBlocks; blockIndex++, destSeg += blockSizeInSeg)
     {
@@ -634,10 +634,10 @@ bool VerifyRom(unsigned int destSeg, const RomData* romData)
 
 bool ProcessRom(const Options* options, const RomData* romData)
 {
-    unsigned int timeoutLoopCount;
-    unsigned int sequenceSeg;
+    unsigned short timeoutLoopCount;
+    unsigned short sequenceSeg;
     const char *deviceName;
-    int numBlocksFlashed;
+    short numBlocksFlashed;
 
     //Calibrate timeout timer.
     PrintMessage("Calibrating timeout timer...");
@@ -671,7 +671,7 @@ bool ProcessRom(const Options* options, const RomData* romData)
     // Print details on what we are about to do.
     PrintMessage("\n"
                  "Will program %dK to %s at address ",
-                 (unsigned int)(romData->romSize / 1024L),
+                 (unsigned short)(romData->romSize / 1024L),
                  deviceName);
     PrintSegAddress(sequenceSeg, options->destSeg);
     PrintMessage(".\n");
@@ -714,7 +714,7 @@ bool ProcessRom(const Options* options, const RomData* romData)
     while (1) {} 
 }
 
-int main(int argc, char **argv)
+short main(short argc, char **argv)
 {
     Options options;
     RomData romData;
